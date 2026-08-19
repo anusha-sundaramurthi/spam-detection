@@ -22,10 +22,12 @@ def initialize_database() -> None:
     submissions.create_index([("risk_level", ASCENDING)])
     submissions.create_index([("email_normalized", ASCENDING)])
     submissions.create_index([("phone_normalized", ASCENDING)])
+    submissions.create_index([("admin_feedback.verdict", ASCENDING)])
     # Make databases created by earlier demo revisions compatible with the role workflow.
     submissions.update_many({"vendor_id": {"$exists": False}}, {"$set": {"vendor_id": "vendor@example.com"}})
     submissions.update_many({"status": {"$exists": False}}, {"$set": {"status": "pending"}})
     submissions.update_many({"assessment_status": {"$exists": False}}, {"$set": {"assessment_status": "complete"}})
+    submissions.update_many({"admin_feedback": {"$exists": False}}, {"$set": {"admin_feedback": []}})
     # Supply safe compatibility values for records made before package fields became mandatory.
     submissions.update_many({"package_name": {"$exists": False}}, {"$set": {"package_name": "Legacy service package"}})
     submissions.update_many({"package_details": {"$exists": False}}, {"$set": {"package_details": "Package details were not captured by the earlier demo version."}})

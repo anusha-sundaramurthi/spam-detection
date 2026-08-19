@@ -26,4 +26,5 @@ export const api = {
   vendorList: () => request('/vendor/submissions'), vendorCreate: data => request('/vendor/submissions', json(data)),
   adminList: () => request('/admin/submissions'), adminGet: id => request(`/admin/submissions/${id}`),
   approve: id => request(`/admin/submissions/${id}/approve`, {method:'POST'}),
+  feedback: (id, data) => request(`/admin/submissions/${id}/feedback`, json(data)),
 };

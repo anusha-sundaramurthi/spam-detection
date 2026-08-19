@@ -82,3 +82,11 @@ Demo logins (change in `.env`): vendor `vendor@example.com` / `vendor-demo`; adm
 Both risk and trust ledgers total 10 available points. Each factor stores its points, maximum, trigger/earned state, and human-readable evidence. If AI succeeds, combined scores use 60% rules and 40% local AI. If AI fails, the stored result explicitly says `rules_only`.
 
 This is advisory demo output. Do not use it as the sole basis for vendor approval or production enforcement.
+
+## Explainable intelligence features
+
+- Exact rule-matched phrases are highlighted in an admin-only spam evidence map.
+- Counterfactuals estimate how much each triggered rule contributes to the combined risk score.
+- Rule and local-AI risk scores show a low, medium, or high disagreement indicator.
+- Similar submissions are clustered into stable campaign identifiers using content, phone, and website evidence.
+- Structured admin feedback records confirmed spam, false positives, accurate low-risk results, and unresolved reviews as an audit history. Feedback never silently retrains the model or changes scoring weights.

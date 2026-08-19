@@ -12,6 +12,12 @@ class LoginInput(BaseModel):
     password: str
 
 
+class AdminFeedbackInput(BaseModel):
+    verdict: str = Field(pattern="^(confirmed_spam|false_positive|accurate_low_risk|needs_review)$")
+    notes: str | None = Field(default=None, max_length=1000)
+    factor_codes: list[str] = Field(default_factory=list, max_length=20)
+
+
 class VendorInput(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     email: str | None = Field(default=None, max_length=254)
@@ -61,6 +67,9 @@ class AdminSummary(BaseModel):
     risk_score: float | None = None
     confidence: int | None = None
     risk_level: str | None = None
+    disagreement_level: str | None = None
+    similar_count: int = 0
+    feedback_verdict: str | None = None
 
 
 class AdminDetail(AdminSummary):
@@ -80,3 +89,6 @@ class AdminDetail(AdminSummary):
     rule_assessment: dict | None = None
     ai_assessment: dict | None = None
     combined_assessment: dict | None = None
+    intelligence: dict = {}
+    campaign: dict = {}
+    admin_feedback: list[dict] = []

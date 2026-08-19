@@ -7,7 +7,7 @@ from unittest.mock import Mock
 from bson import ObjectId
 
 from app import main
-from app.schemas import VendorInput
+from app.schemas import AdminFeedbackInput, VendorInput
 
 
 # Confirms submission calculates scores immediately while returning status only.
@@ -32,3 +32,18 @@ def test_vendor_submission_scores_automatically_but_receipt_hides_scores(monkeyp
     assert stored["email"] == "vendor@example.com"
     assert "risk_factors" in stored and "trust_factors" in stored
     assert set(receipt.model_dump()) == {"id", "status", "created_at", "message"}
+
+
+# Confirms structured false-positive feedback is appended and returned to admins.
+def test_admin_feedback_is_stored_as_audit_history(monkeypatch):
+    target = ObjectId()
+    row = {"_id": target, "name": "Acme", "phone": "123456789", "website": None,
+        "service_title": "Design", "description": "Detailed design service", "package_details": "Research and design deliverables",
+        "risk_factors": [{"code": "thin_description", "triggered": True}], "trust_factors": [{}],
+        "mandatory_services": [{}], "intelligence": {"disagreement": {"level": "low"}}, "admin_feedback": []}
+    collection = Mock(); collection.find_one.return_value = row; collection.find.return_value = [row]
+    monkeypatch.setattr(main, "submissions", collection)
+    result = main.save_feedback(str(target), AdminFeedbackInput(verdict="false_positive", notes="Legitimate concise listing", factor_codes=["thin_description"]), {"sub": "admin@example.com", "role": "admin"})
+    pushed = collection.update_one.call_args.args[1]["$push"]["admin_feedback"]
+    assert pushed["verdict"] == "false_positive"
+    assert result["feedback_verdict"] == "false_positive"
