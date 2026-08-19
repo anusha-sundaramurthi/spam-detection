@@ -1,0 +1,9 @@
+# Purpose: Prevents generated dependencies, caches, databases, builds, and secrets from entering source control.
+__pycache__/
+*.pyc
+*.db
+.venv/
+node_modules/
+.npm-cache/
+dist/
+.env

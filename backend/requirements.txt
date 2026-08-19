@@ -1,0 +1,7 @@
+# Purpose: Pins the Python runtime dependencies required by the FastAPI backend and tests.
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+pydantic[email]==2.11.7
+pymongo==4.14.0
+pytest==8.4.1
+httpx==0.28.1
