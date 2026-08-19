@@ -1,4 +1,4 @@
-# ClearVendor spam detection demo
+# onivah spam detection demo
 
 Demo-only React + FastAPI system with a separate MongoDB database, deterministic rules, and a local Ollama model. Spam detection is the core concept. Vendors submit detailed services/packages and see status only; automatic scores and reasons are admin-only.
 
@@ -25,7 +25,7 @@ Run `powershell -ExecutionPolicy Bypass -File scripts/check_local_services.ps1` 
 ## Required project structure
 
 ```text
-clearvendor-mongodb-ai-demo/
+onivah-mongodb-ai-demo/
 ├── backend/
 │   ├── app/                  # API, auth, schemas, database, rules, AI, seeds
 │   ├── tests/                # Auth, rules, combination, workflow tests

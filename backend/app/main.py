@@ -26,7 +26,7 @@ async def lifespan(_: FastAPI):
     initialize_database(); seed_if_empty(); yield
 
 
-app = FastAPI(title="ClearVendor Demo API", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="onivah Demo API", version="3.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
 vendor_only, admin_only = require_role("vendor"), require_role("admin")
 

@@ -1,4 +1,4 @@
 """
-Purpose: Marks the backend application directory as the ClearVendor Python
+Purpose: Marks the backend application directory as the onivah Python
 package so FastAPI modules can use stable relative imports.
 """
