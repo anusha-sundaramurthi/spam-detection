@@ -61,7 +61,7 @@ def ensure_current_assessment(row: dict) -> dict:
     """Automatically upgrade and rescore records created by earlier demo versions."""
     if row.get("risk_factors") and row.get("trust_factors") and row.get("mandatory_services") and row.get("intelligence"):
         return row
-    payload = VendorInput(**{key: row[key] for key in VendorInput.model_fields})
+    payload = VendorInput(**{key: row.get(key) for key in VendorInput.model_fields})
     prior = [{"id": str(x["_id"]), "email": x["email"], "phone": x["phone"], "description": x["description"]}
              for x in submissions.find({"_id": {"$ne": row["_id"]}})]
     update = assessment_fields(payload, prior)

@@ -9,7 +9,7 @@ import {CheckCircle2,Send} from 'lucide-react';
 import {api} from '../api';
 import {Field} from '../components';
 
-const initial={name:'',phone:'',website:'',service_title:'',description:'',category:'Design',social_links:'',business_registration:'',package_name:'',package_details:'',price_or_range:'',delivery_timeline:'',special_offer:''};
+const initial={name:'',phone:'',website:'',location:'',portfolio_link:'',service_title:'',description:'',category:'Venues',social_links:'',business_registration:'',package_name:'',package_details:'',price_or_range:'',delivery_timeline:'',special_offer:''};
 
 // Validates every optional social link only when the vendor supplies one.
 function invalidSocialLinks(value){return value.split('\n').map(x=>x.trim()).filter(Boolean).some(value=>{try{return !['http:','https:'].includes(new URL(value).protocol)}catch{return true}})}
@@ -33,9 +33,11 @@ export default function VendorForm(){
     <form noValidate className={`panel form ${attempted?'validated':''}`} onSubmit={submit}>
       <div className="form-section"><h2>Business and service</h2><div className="grid">
         <Field required label="Business name"><input required minLength="2" name="name" value={form.name} onChange={change}/></Field>
-        <Field required label="Category"><select required name="category" value={form.category} onChange={change}><option>Design</option><option>Development</option><option>Marketing</option><option>Finance</option><option>Other</option></select></Field>
+        <Field required label="Category"><select required name="category" value={form.category} onChange={change}><option>Venues</option><option>Catering</option><option>Photography & Videography</option><option>Decor & Florist</option><option>Wedding Planning</option><option>DJ & Entertainment</option><option>Makeup & Bridal</option><option>Invitations & Stationery</option><option>Other</option></select></Field>
         <Field required label="Phone"><input required pattern="[0-9+()\-\s]{7,40}" title="Use 7–40 digits and common phone symbols" name="phone" value={form.phone} onChange={change}/></Field>
         <Field label="Website (optional)" className="wide"><input type="url" placeholder="https://example.com" name="website" value={form.website} onChange={change}/></Field>
+        <Field required label="Service location (city)"><input required minLength="2" name="location" value={form.location} onChange={change} placeholder="e.g. Chennai"/></Field>
+        <Field required label="Portfolio link"><input required type="url" name="portfolio_link" value={form.portfolio_link} onChange={change} placeholder="https://instagram.com/yourwork"/></Field>
         <Field required label="Service title" className="wide"><input required minLength="3" name="service_title" value={form.service_title} onChange={change}/></Field>
         <Field required label="Detailed service description" className="wide"><textarea required minLength="10" rows="6" name="description" value={form.description} onChange={change} placeholder="Explain process, deliverables, intended customer, and limitations."/></Field>
       </div></div>

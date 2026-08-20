@@ -23,6 +23,8 @@ class VendorInput(BaseModel):
     email: str | None = Field(default=None, max_length=254)
     phone: str = Field(min_length=7, max_length=40)
     website: str | None = Field(default=None, max_length=500)
+    location: str = Field(min_length=2, max_length=120)
+    portfolio_link: str = Field(min_length=5, max_length=500)
     service_title: str = Field(min_length=3, max_length=160)
     description: str = Field(min_length=10, max_length=5000)
     category: str = Field(min_length=2, max_length=80)
@@ -35,7 +37,7 @@ class VendorInput(BaseModel):
     special_offer: str | None = Field(default=None, max_length=500)
 
     # Trims mandatory text fields and rejects whitespace-only values.
-    @field_validator("name", "phone", "service_title", "description", "category", "package_name", "package_details", "price_or_range", "delivery_timeline")
+    @field_validator("name", "phone", "location", "service_title", "description", "category", "package_name", "package_details", "price_or_range", "delivery_timeline")
     @classmethod
     def strip_required(cls, value):
         if not value.strip(): raise ValueError("must not be blank")
@@ -75,6 +77,8 @@ class AdminSummary(BaseModel):
 class AdminDetail(AdminSummary):
     phone: str
     website: str | None
+    location: str
+    portfolio_link: str
     description: str
     social_links: list[str]
     business_registration: str | None
