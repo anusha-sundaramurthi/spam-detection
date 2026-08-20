@@ -42,3 +42,11 @@ def initialize_database() -> None:
     submissions.update_many({"country": {"$exists": False}}, {"$set": {"country": "Not provided"}})
     submissions.update_many({"pincode": {"$exists": False}}, {"$set": {"pincode": "000"}})
     submissions.update_many({}, {"$unset": {"delivery_timeline": "", "location": ""}})
+    submissions.update_many(
+        {"$or": [{"images": {"$exists": False}}, {"images": None}]},
+        {"$set": {"images": []}},
+    )
+    submissions.update_many(
+        {"portfolio_link": {"$exists": False}},
+        {"$set": {"portfolio_link": None}},
+    )
