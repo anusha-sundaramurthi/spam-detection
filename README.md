@@ -1,6 +1,6 @@
 # onivah spam detection demo
 
-Demo-only React + FastAPI system with a separate MongoDB database, deterministic rules, and a local Ollama model. Spam detection is the core concept. Vendors submit detailed services/packages and see status only; automatic scores and reasons are admin-only.
+Demo-only React + FastAPI system with a separate MongoDB database and AI-only local Ollama scoring. Llama is primary and Qwen is the automatic backup. Deterministic checks provide zero-weight evidence only. Vendors see status only; scores and reasons are admin-only.
 
 ## Automatic workflow
 
@@ -12,11 +12,11 @@ Demo-only React + FastAPI system with a separate MongoDB database, deterministic
 
 ## Mandatory scoring services
 
-- **Description, package, and offer spam screening (highest priority)**
-- **Local AI semantic description review (Ollama + `llama3.2:3b`)**
-- **Duplicate and copied-content screening**
-- **Optional website threat-pattern screening when a URL is supplied**
-- **Business trust-evidence screening**
+- **Primary AI scoring (`llama3.2:3b`)**
+- **Backup AI scoring (`qwen2.5:3b`)**
+- **Zero-weight description, package, and offer evidence detection**
+- **Zero-weight duplicate and campaign evidence detection**
+- **Zero-weight optional URL evidence detection**
 
 The vendor's email comes from the authenticated login and is not a spam-scoring input. Website, social profiles, business registration, and special offers are optional; a supplied URL is still validated and screened.
 
@@ -56,6 +56,7 @@ Requirements: Python 3.11+, Node 20+, MongoDB, and Ollama.
 
 ```powershell
 ollama pull llama3.2:3b
+ollama pull qwen2.5:3b
 
 cd backend
 python -m venv .venv
@@ -79,7 +80,7 @@ Demo logins (change in `.env`): vendor `vendor@example.com` / `vendor-demo`; adm
 
 ## Scoring model
 
-Both risk and trust ledgers total 10 available points. Each factor stores its points, maximum, trigger/earned state, and human-readable evidence. If AI succeeds, combined scores use 60% rules and 40% local AI. If AI fails, the stored result explicitly says `rules_only`.
+Both risk and trust ledgers total 10 available points and are generated exclusively by the successful local AI model. Llama is attempted first; Qwen is attempted only when Llama fails or returns invalid structured output. If both fail, scores remain empty, the assessment is marked `ai_unavailable`, and admin approval is blocked. Deterministic content, URL, duplicate, and trust checks remain visible evidence with `scoring_weight: 0`.
 
 This is advisory demo output. Do not use it as the sole basis for vendor approval or production enforcement.
 
@@ -87,6 +88,14 @@ This is advisory demo output. Do not use it as the sole basis for vendor approva
 
 - Exact rule-matched phrases are highlighted in an admin-only spam evidence map.
 - Counterfactuals estimate how much each triggered rule contributes to the combined risk score.
-- Rule and local-AI risk scores show a low, medium, or high disagreement indicator.
+- Every assessment records whether primary Llama or fallback Qwen produced the score.
 - Similar submissions are clustered into stable campaign identifiers using content, phone, and website evidence.
 - Structured admin feedback records confirmed spam, false positives, accurate low-risk results, and unresolved reviews as an audit history. Feedback never silently retrains the model or changes scoring weights.
+
+## Vendor registration and uploads
+
+The vendor form requires address line 1, address line 2, city, state, country, and pincode. Aadhaar and GSTIN are optional and format-validated; Aadhaar is masked in the admin interface. Delivery timeline is not collected.
+
+For the event-service marketplace, the universal required fields are business name, event-service category, phone, service title, detailed service description, and the structured address. Website, portfolio link, package name, price/range, package inclusions, special offer, social links, business registration, Aadhaar, GSTIN, service photos, and supporting file are optional. Missing portfolio or package data is neutral and does not reduce the AI score.
+
+Vendors may optionally upload up to five JPEG/PNG/WebP service photos (5 MB each) and one PDF/DOC/DOCX supporting document (10 MB). Files are stored under the backend's ignored `uploads/` directory with randomized names; MongoDB stores metadata and ownership/link state. Upload references are ownership-verified before submission, and media retrieval is restricted to authenticated administrators.

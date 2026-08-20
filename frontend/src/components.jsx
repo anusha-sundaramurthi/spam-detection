@@ -7,7 +7,7 @@
 export function Badge({level}) { return <span className={`badge ${level}`}>{level} risk</span>; }
 
 // Renders one score out of ten with a matching horizontal meter.
-export function Score({label, value, type}) { return <div className="score"><span>{label}</span><strong className={type}>{value}<small>/10</small></strong><div className="meter"><i className={type} style={{width:`${value*10}%`}}/></div></div>; }
+export function Score({label, value, type}) { const available=value!==null&&value!==undefined;return <div className="score"><span>{label}</span><strong className={type}>{available?value:'—'}<small>/10</small></strong><div className="meter"><i className={type} style={{width:`${available?value*10:0}%`}}/></div></div>; }
 
 // Wraps form controls with a consistent accessible visible label.
 export function Field({label, children, className='', required=false}) { return <label className={className}><span>{label}{required&&<b className="required-star" aria-hidden="true"> *</b>}</span>{children}</label>; }

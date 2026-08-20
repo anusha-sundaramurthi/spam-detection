@@ -18,6 +18,8 @@ async function request(path, options={}) {
   if (!response.ok) { const body=await response.json().catch(()=>({})); throw new Error(body.detail||'Request failed'); }
   return response.json();
 }
+// Downloads protected admin media using the current bearer token.
+async function requestBlob(path) { const response=await fetch(`${BASE}${path}`,{headers:token()?{Authorization:`Bearer ${token()}`}:{}});if(!response.ok)throw new Error('Unable to load protected upload');return response.blob(); }
 // Builds the common JSON POST options used by authentication and submission calls.
 // Builds common JSON POST options for login and submission operations.
 const json = body => ({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -27,4 +29,6 @@ export const api = {
   adminList: () => request('/admin/submissions'), adminGet: id => request(`/admin/submissions/${id}`),
   approve: id => request(`/admin/submissions/${id}/approve`, {method:'POST'}),
   feedback: (id, data) => request(`/admin/submissions/${id}/feedback`, json(data)),
+  vendorUpload: (images, attachment) => {const body=new FormData();images.forEach(image=>body.append('images',image));if(attachment)body.append('attachment',attachment);return request('/vendor/uploads',{method:'POST',body})},
+  adminUpload: storageName => requestBlob(`/admin/uploads/${storageName}`),
 };

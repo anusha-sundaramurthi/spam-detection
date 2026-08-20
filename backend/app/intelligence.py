@@ -1,6 +1,6 @@
 """
-Purpose: Builds explainable spam evidence, score counterfactuals, model
-disagreement metadata, and privacy-safe cross-submission campaign matches.
+Purpose: Builds explainable spam evidence, AI-factor counterfactuals, model
+fallback provenance, and privacy-safe cross-submission campaign matches.
 """
 
 import hashlib
@@ -26,36 +26,32 @@ def evidence_spans(field: str, value: str | None) -> list[dict]:
 
 
 # Produces stored explainability metadata from deterministic and AI outputs.
-def build_intelligence(data, rules: dict, ai: dict, combined: dict) -> dict:
-    """Create evidence, counterfactual impacts, and rule/AI disagreement details."""
+def build_intelligence(data, evidence_only: dict, ai: dict, combined: dict) -> dict:
+    """Create zero-weight evidence, AI counterfactuals, and model provenance."""
     evidence = []
     for field in ("service_title", "description", "package_details", "special_offer"):
         evidence.extend(evidence_spans(field, getattr(data, field, None)))
-    ai_risk = ai.get("risk_score") if ai.get("status") == "complete" else None
-    rule_risk = rules["risk_score"]
-    gap = round(abs(rule_risk - ai_risk), 1) if ai_risk is not None else None
-    disagreement = "unavailable" if gap is None else "high" if gap >= 4 else "medium" if gap >= 2 else "low"
-    weight = .6 if ai_risk is not None else 1
     counterfactuals = [{"factor_code": factor["code"], "label": factor["label"],
-        "current_risk": combined["risk_score"], "estimated_risk_without_factor": round(max(0, combined["risk_score"] - factor["points"] * weight), 1),
-        "estimated_reduction": round(factor["points"] * weight, 1)}
-        for factor in rules["risk_factors"] if factor["triggered"] and factor["points"] > 0]
+        "current_risk": combined["risk_score"], "estimated_risk_without_factor": round(max(0, combined["risk_score"] - factor["points"]), 1),
+        "estimated_reduction": round(factor["points"], 1)}
+        for factor in ai.get("risk_factors", []) if combined.get("risk_score") is not None and factor["points"] > 0]
     return {"evidence_map": evidence, "ai_evidence": ai.get("spam_indicators", []),
-            "counterfactuals": counterfactuals, "disagreement": {"level": disagreement,
-            "gap": gap, "rule_risk": rule_risk, "ai_risk": ai_risk,
-            "reason": "Local AI was unavailable; rules were used alone." if gap is None else f"Rule and AI risk scores differ by {gap} points."}}
+            "deterministic_evidence": evidence_only, "counterfactuals": counterfactuals,
+            "model_provenance": {"status": ai.get("status"), "model": ai.get("model"),
+            "primary_model": ai.get("primary_model"), "backup_model": ai.get("backup_model"),
+            "fallback_used": ai.get("fallback_used", False), "attempted_models": ai.get("attempted_models", [])}}
 
 
 # Compares one record with all other records to find coordinated spam patterns.
 def find_similar_submissions(row: dict, candidates: list[dict]) -> list[dict]:
     """Return explainable similarity matches without exposing them to vendors."""
-    current = normalize(" ".join([row.get("service_title", ""), row.get("description", ""), row.get("package_details", "")]))
+    current = normalize(" ".join([row.get("service_title") or "", row.get("description") or "", row.get("package_details") or ""]))
     current_phone = re.sub(r"\D", "", row.get("phone", ""))
     matches = []
     for other in candidates:
         if other.get("_id") == row.get("_id"):
             continue
-        other_text = normalize(" ".join([other.get("service_title", ""), other.get("description", ""), other.get("package_details", "")]))
+        other_text = normalize(" ".join([other.get("service_title") or "", other.get("description") or "", other.get("package_details") or ""]))
         text_similarity = SequenceMatcher(None, current, other_text).ratio() if current and other_text else 0
         same_phone = bool(current_phone and current_phone == re.sub(r"\D", "", other.get("phone", "")))
         same_website = bool(row.get("website") and row.get("website") == other.get("website"))

@@ -8,16 +8,18 @@ from datetime import datetime, timezone
 import re
 
 from bson import ObjectId
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from .auth import login, require_role
-from .database import initialize_database, submissions
+from .database import initialize_database, submissions, upload_records
 from .intelligence import build_intelligence, campaign_metadata, find_similar_submissions
 from .llm_scoring import assess_with_local_llm, combine
 from .schemas import AdminDetail, AdminFeedbackInput, AdminSummary, LoginInput, VendorInput, VendorReceipt, VendorSubmission
-from .scoring import MANDATORY_SCORING_SERVICES, score_vendor
+from .scoring import MANDATORY_SCORING_SERVICES, analyze_vendor
 from .seed import seed_if_empty
+from .uploads import resolve_upload, store_upload_batch
 
 
 # Initializes MongoDB and demo data when the API starts.
@@ -48,10 +50,10 @@ def serialize(row):
 # Runs the complete automatic assessment and packages all stored admin evidence.
 def assessment_fields(payload: VendorInput, prior: list[dict]) -> dict:
     """Keep deterministic, AI, combined, and explainability outputs synchronized."""
-    rules = score_vendor(payload, prior); ai = assess_with_local_llm(payload); combined = combine(rules, ai)
-    intelligence = build_intelligence(payload, rules, ai, combined)
-    return {"assessment_status": "complete", "assessed_at": datetime.now(timezone.utc),
-        "rule_assessment": rules, "risk_factors": rules["risk_factors"], "trust_factors": rules["trust_factors"],
+    evidence = analyze_vendor(payload, prior); ai = assess_with_local_llm(payload, evidence); combined = combine(evidence, ai)
+    intelligence = build_intelligence(payload, evidence, ai, combined)
+    return {"assessment_version": "ai-only-v1", "assessment_status": "complete" if ai["status"] == "complete" else "ai_unavailable", "assessed_at": datetime.now(timezone.utc),
+        "rule_assessment": evidence, "risk_factors": ai.get("risk_factors", []), "trust_factors": ai.get("trust_factors", []),
         "mandatory_services": MANDATORY_SCORING_SERVICES, "ai_assessment": ai,
         "combined_assessment": combined, "intelligence": intelligence, **combined}
 
@@ -59,7 +61,7 @@ def assessment_fields(payload: VendorInput, prior: list[dict]) -> dict:
 # Automatically upgrades and re-scores legacy records when required.
 def ensure_current_assessment(row: dict) -> dict:
     """Automatically upgrade and rescore records created by earlier demo versions."""
-    if row.get("risk_factors") and row.get("trust_factors") and row.get("mandatory_services") and row.get("intelligence"):
+    if row.get("assessment_version") == "ai-only-v1" and row.get("intelligence"):
         return row
     payload = VendorInput(**{key: row.get(key) for key in VendorInput.model_fields})
     prior = [{"id": str(x["_id"]), "email": x["email"], "phone": x["phone"], "description": x["description"]}
@@ -76,7 +78,9 @@ def enrich_admin(row: dict) -> dict:
     feedback = row.get("admin_feedback", [])
     row["campaign"] = campaign_metadata(row, matches)
     row["similar_count"] = row["campaign"]["similar_count"]
-    row["disagreement_level"] = row["intelligence"]["disagreement"]["level"]
+    provenance = row["intelligence"].get("model_provenance", {})
+    row["scoring_model"] = provenance.get("model")
+    row["fallback_used"] = provenance.get("fallback_used", False)
     row["feedback_verdict"] = feedback[-1]["verdict"] if feedback else None
     return row
 
@@ -91,11 +95,36 @@ def health(): return {"status": "ok", "mode": "demo", "database": "mongodb"}
 def authenticate(payload: LoginInput): return login(payload.username, payload.password)
 
 
+# Accepts optional vendor media before the JSON submission is created.
+@app.post("/api/vendor/uploads")
+async def vendor_uploads(images: list[UploadFile] = File(default=[]), attachment: UploadFile | None = File(default=None), user=Depends(vendor_only)):
+    """Validate and store up to five service images plus one supporting document."""
+    stored = await store_upload_batch(images, attachment, user["sub"])
+    records = stored["images"] + ([stored["file"]] if stored["file"] else [])
+    if records: upload_records.insert_many([record | {"linked": False, "uploaded_at": datetime.now(timezone.utc)} for record in records])
+    return stored
+
+
+# Replaces client-supplied upload metadata with authoritative owned records.
+def verified_uploads(payload: VendorInput, owner: str) -> VendorInput:
+    """Prevent vendors from linking unknown or another vendor's uploaded files."""
+    requested = [item.get("storage_name") for item in payload.images] + ([payload.file.get("storage_name")] if payload.file else [])
+    if not requested:
+        return payload
+    records = list(upload_records.find({"storage_name": {"$in": requested}, "owner": owner, "linked": False}))
+    by_name = {record["storage_name"]: {key: value for key, value in record.items() if key not in {"_id", "linked", "uploaded_at"}} for record in records}
+    if len(requested) != len(set(requested)) or len(by_name) != len(requested) or any(name not in by_name for name in requested):
+        raise HTTPException(400, "One or more uploads are invalid, already linked, or owned by another vendor")
+    images = [by_name[item["storage_name"]] for item in payload.images]
+    attachment = by_name[payload.file["storage_name"]] if payload.file else None
+    return payload.model_copy(update={"images": images, "file": attachment})
+
+
 # Stores and automatically assesses a vendor submission without exposing scores.
 @app.post("/api/vendor/submissions", response_model=VendorReceipt, status_code=201)
 def vendor_submit(payload: VendorInput, user=Depends(vendor_only)):
     """Persist the vendor record, then automatically score it without exposing scores."""
-    payload = payload.model_copy(update={"email": user["sub"]})
+    payload = verified_uploads(payload.model_copy(update={"email": user["sub"]}), user["sub"])
     now = datetime.now(timezone.utc)
     prior = [{"id": str(x["_id"]), "email": x["email"], "phone": x["phone"], "description": x["description"]} for x in submissions.find()]
     assessment = assessment_fields(payload, prior)
@@ -103,6 +132,8 @@ def vendor_submit(payload: VendorInput, user=Depends(vendor_only)):
         "assessment_status": "complete", "email_normalized": payload.email.lower(), "phone_normalized": re.sub(r"\D", "", payload.phone),
         "admin_feedback": [], **assessment}
     result = submissions.insert_one(document)
+    storage_names = [item["storage_name"] for item in payload.images] + ([payload.file["storage_name"]] if payload.file else [])
+    if storage_names: upload_records.update_many({"storage_name": {"$in": storage_names}}, {"$set": {"linked": True, "submission_id": result.inserted_id}})
     return VendorReceipt(id=str(result.inserted_id), status="pending", created_at=now)
 
 
@@ -126,6 +157,16 @@ def admin_detail(submission_id: str, user=Depends(admin_only)):
     row = submissions.find_one({"_id": oid(submission_id)})
     if not row: raise HTTPException(404, "Submission not found")
     return serialize(enrich_admin(row))
+
+
+# Streams a stored submission upload only to authenticated administrators.
+@app.get("/api/admin/uploads/{storage_name}")
+def admin_upload(storage_name: str, user=Depends(admin_only)):
+    """Protect service images and documents from unauthenticated public access."""
+    row = submissions.find_one({"$or": [{"images.storage_name": storage_name}, {"file.storage_name": storage_name}]})
+    if not row: raise HTTPException(404, "Upload is not linked to a submission")
+    metadata = next((image for image in row.get("images", []) if image["storage_name"] == storage_name), row.get("file"))
+    return FileResponse(resolve_upload(storage_name), media_type=metadata["content_type"], filename=metadata["original_name"])
 
 
 # Records a human approval after automatic assessment completes.
