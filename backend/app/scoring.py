@@ -19,6 +19,8 @@ MANDATORY_SCORING_SERVICES = [
     {"code": "content_evidence", "name": "Zero-weight content-pattern evidence", "required": True},
     {"code": "duplicate_evidence", "name": "Zero-weight duplicate/campaign evidence", "required": True},
     {"code": "url_evidence", "name": "Zero-weight optional URL evidence", "required": True},
+    {"code": "address_package_offer_evidence", "name": "Zero-weight address, package, and offer spam evidence", "required": True},
+    {"code": "image_verification", "name": "Backend image integrity and duplicate evidence", "required": True},
 ]
 
 
@@ -62,11 +64,34 @@ def analyze_vendor(data, prior_submissions: list[dict]) -> dict:
     suspicious_url = website_present and any(term in data.website.lower() for term in SUSPICIOUS_URL_TERMS)
     risk_factor("suspicious_url", "Suspicious or shortened URL", 1.0, "Website contains a shortened or suspicious URL pattern." if suspicious_url else "No suspicious URL pattern found.", suspicious_url)
 
-    combined_text = " ".join([data.service_title, data.description, data.package_details or "", data.special_offer or ""]).lower()
+    text_fields = {
+        "service title": data.service_title, "description": data.description,
+        "address": " ".join([data.address_line1, data.address_line2, data.city, data.state, data.country, data.pincode]),
+        "package name": data.package_name or "", "package details": data.package_details or "",
+        "price": data.price_or_range or "", "special offer": data.special_offer or "",
+    }
+    combined_text = " ".join(text_fields.values()).lower()
     spam_hits = sorted(term for term in SPAM_TERMS if term in combined_text)
     risk.append({"code": "spam_keywords", "label": "Spam and urgency phrases", "points": 0, "max_points": 0,
                  "triggered": bool(spam_hits), "reason": f"Matched: {', '.join(spam_hits)}." if spam_hits else "No common spam phrases found.",
                  "source": "deterministic_evidence", "scoring_weight": 0})
+    field_hits = {field: sorted(term for term in SPAM_TERMS if term in value.lower())
+                  for field, value in text_fields.items() if value and any(term in value.lower() for term in SPAM_TERMS)}
+    risk_factor("spam_field_locations", "Spam phrases by submitted field", 0,
+                "; ".join(f"{field}: {', '.join(hits)}" for field, hits in field_hits.items()) if field_hits else
+                "No common spam phrases found in address, package, price, or offer fields.", bool(field_hits))
+
+    verified_images = [image for image in data.images if image.get("image_verified")]
+    hashes = [image.get("sha256") for image in verified_images if image.get("sha256")]
+    prior_hashes = {image.get("sha256") for old in prior_submissions for image in old.get("images", []) if image.get("sha256")}
+    duplicate_images = len(hashes) != len(set(hashes)) or bool(set(hashes) & prior_hashes)
+    invalid_images = bool(data.images) and len(verified_images) != len(data.images)
+    risk_factor("invalid_image", "Invalid or unverifiable service image", 0,
+                "One or more image records failed backend integrity verification." if invalid_images else
+                f"{len(verified_images)} image(s) passed backend format, decode, and dimension verification.", invalid_images)
+    risk_factor("duplicate_image", "Duplicate service image", 0,
+                "The same image content appears more than once or matches an earlier submission." if duplicate_images else
+                "No duplicate image content found in this or prior submissions.", duplicate_images)
     letters = [c for c in combined_text if c.isalpha()]; caps_ratio = sum(c.isupper() for c in data.description) / max(1, len(letters)); emojis = len(EMOJI_RE.findall(combined_text))
     noisy = (len(letters) >= 20 and caps_ratio > .35) or emojis > 5
     risk_factor("noisy_content", "Excessive caps or emojis", 1.5, f"Uppercase ratio {caps_ratio:.0%}; {emojis} emojis." if noisy else "Capitalization and emoji use are reasonable.", noisy)

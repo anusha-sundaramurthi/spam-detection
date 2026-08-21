@@ -2,6 +2,8 @@
 
 Demo-only React + FastAPI system with a separate MongoDB database and AI-only local Ollama scoring. Llama is primary and Qwen is the automatic backup. Deterministic checks provide zero-weight evidence only. Vendors see status only; scores and reasons are admin-only.
 
+Submission processing is save-first: React sends one multipart request, FastAPI validates and stores the raw record with `created_at`, `updated_at`, and `assessment_status: pending`, then a backend task reloads that MongoDB document, constructs the validated scoring input, and runs all assessment services. Address, package, price, and offer fields are included in spam detection. Optional images are verified on the backend by signature, dimensions, and SHA-256 duplicate detection; the configured text-only Llama/Qwen models do not claim visual scene understanding.
+
 ## Automatic workflow
 
 1. Vendor signs in and submits the business, service, package, pricing, delivery, and offer details.

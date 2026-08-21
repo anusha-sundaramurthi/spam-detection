@@ -29,7 +29,8 @@ def evidence_spans(field: str, value: str | None) -> list[dict]:
 def build_intelligence(data, evidence_only: dict, ai: dict, combined: dict) -> dict:
     """Create zero-weight evidence, AI counterfactuals, and model provenance."""
     evidence = []
-    for field in ("service_title", "description", "package_details", "special_offer"):
+    for field in ("service_title", "description", "address_line1", "address_line2", "city", "state", "country", "pincode",
+                  "package_name", "package_details", "price_or_range", "special_offer"):
         evidence.extend(evidence_spans(field, getattr(data, field, None)))
     counterfactuals = [{"factor_code": factor["code"], "label": factor["label"],
         "current_risk": combined["risk_score"], "estimated_risk_without_factor": round(max(0, combined["risk_score"] - factor["points"]), 1),

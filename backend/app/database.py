@@ -4,6 +4,7 @@ and compatibility migrations for records created by earlier demo versions.
 """
 
 import os
+from datetime import datetime, timezone
 from pymongo import ASCENDING, DESCENDING, MongoClient
 
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
@@ -31,6 +32,9 @@ def initialize_database() -> None:
     submissions.update_many({"status": {"$exists": False}}, {"$set": {"status": "pending"}})
     submissions.update_many({"assessment_status": {"$exists": False}}, {"$set": {"assessment_status": "complete"}})
     submissions.update_many({"admin_feedback": {"$exists": False}}, {"$set": {"admin_feedback": []}})
+    now = datetime.now(timezone.utc)
+    submissions.update_many({"created_at": {"$exists": False}}, {"$set": {"created_at": now}})
+    submissions.update_many({"updated_at": {"$exists": False}}, [{"$set": {"updated_at": {"$ifNull": ["$assessed_at", "$created_at"]}}}])
     # Supply safe compatibility values for records made before package fields became mandatory.
     submissions.update_many({"package_name": {"$exists": False}}, {"$set": {"package_name": "Legacy service package"}})
     submissions.update_many({"package_details": {"$exists": False}}, {"$set": {"package_details": "Package details were not captured by the earlier demo version."}})

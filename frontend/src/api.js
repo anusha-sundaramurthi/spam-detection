@@ -25,10 +25,10 @@ async function requestBlob(path) { const response=await fetch(`${BASE}${path}`,{
 const json = body => ({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 export const api = {
   login: data => request('/auth/login', json(data)),
-  vendorList: () => request('/vendor/submissions'), vendorCreate: data => request('/vendor/submissions', json(data)),
+  vendorList: () => request('/vendor/submissions'),
+  vendorCreate: (data, images=[], attachment=null) => {const body=new FormData();body.append('payload_json',JSON.stringify(data));images.forEach(image=>body.append('images',image));if(attachment)body.append('attachment',attachment);return request('/vendor/submissions',{method:'POST',body})},
   adminList: () => request('/admin/submissions'), adminGet: id => request(`/admin/submissions/${id}`),
   approve: id => request(`/admin/submissions/${id}/approve`, {method:'POST'}),
   feedback: (id, data) => request(`/admin/submissions/${id}/feedback`, json(data)),
-  vendorUpload: (images, attachment) => {const body=new FormData();images.forEach(image=>body.append('images',image));if(attachment)body.append('attachment',attachment);return request('/vendor/uploads',{method:'POST',body})},
   adminUpload: storageName => requestBlob(`/admin/uploads/${storageName}`),
 };

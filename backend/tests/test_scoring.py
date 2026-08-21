@@ -37,3 +37,13 @@ def test_portfolio_and_package_fields_are_optional_and_neutral():
     package=next(item for item in result["trust_evidence"] if item["code"]=="package_transparency")
     assert not package["earned"] and package["points"]==0
     assert "neutral" in package["reason"].lower()
+
+# Confirms spam hidden outside the description is still supplied as backend evidence.
+def test_address_package_offer_and_images_are_checked():
+    data = vendor(address_line1="ACT NOW click here", package_name="100% FREE", special_offer="BUY NOW limited time",
+                  images=[{"image_verified": True, "sha256": "same"}, {"image_verified": True, "sha256": "same"}])
+    result = analyze_vendor(data, [])
+    factors = {item["code"]: item for item in result["risk_evidence"]}
+    assert factors["spam_field_locations"]["triggered"]
+    assert "address" in factors["spam_field_locations"]["reason"]
+    assert factors["duplicate_image"]["triggered"]
