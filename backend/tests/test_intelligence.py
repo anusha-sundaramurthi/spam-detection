@@ -13,7 +13,7 @@ from app.intelligence import build_intelligence, campaign_metadata, find_similar
 def assessment_data():
     vendor = SimpleNamespace(service_title="ACT NOW design", description="Buy now for guaranteed growth", package_details="Design package", special_offer=None)
     evidence = {"mode": "evidence_only", "scoring_weight": 0, "risk_evidence": [], "trust_evidence": []}
-    ai = {"status": "complete", "model": "qwen2.5:3b", "primary_model": "llama3.2:3b", "backup_model": "qwen2.5:3b", "fallback_used": True,
+    ai = {"status": "complete", "model": "gemma3:1b", "primary_model": "qwen3:1.7b", "backup_model": "gemma3:1b", "fallback_used": True,
           "risk_score": 9.0, "risk_factors": [{"code": "ai_risk_1", "label": "Spam phrases", "points": 3.0}], "spam_indicators": ["Unrealistic guarantee"]}
     combined = {"risk_score": 9.0}
     return vendor, evidence, ai, combined

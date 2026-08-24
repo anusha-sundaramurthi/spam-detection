@@ -7,10 +7,10 @@ from app.llm_scoring import combine, normalize_factors, unavailable
 
 # Confirms the final score is copied from AI without deterministic weighting.
 def test_final_score_is_ai_only():
-    ai={"status":"complete","model":"llama3.2:3b","trust_score":4.0,"risk_score":8.0,"confidence":60}
+    ai={"status":"complete","model":"qwen3:1.7b","trust_score":4.0,"risk_score":8.0,"confidence":60}
     result=combine({"scoring_weight":0},ai)
     assert result["trust_score"]==4.0 and result["risk_score"]==8.0
-    assert result["method"]=="AI-only local scoring" and result["scoring_model"]=="llama3.2:3b"
+    assert result["method"]=="AI-only local scoring" and result["scoring_model"]=="qwen3:1.7b"
 
 # Confirms factor arithmetic is normalized to the exact model score.
 def test_ai_factor_points_match_score():
@@ -23,7 +23,7 @@ def test_both_models_unavailable_blocks_scoring():
     assert result["method"]=="ai_unavailable"
     assert result["trust_score"] is None and result["risk_score"] is None
 
-# Confirms Qwen is attempted only after the primary Llama model fails.
+# Confirms Gemma is attempted only after the primary Qwen model fails.
 def test_qwen_is_used_as_backup(monkeypatch):
     calls=[]
     def attempt(_data,_evidence,model):

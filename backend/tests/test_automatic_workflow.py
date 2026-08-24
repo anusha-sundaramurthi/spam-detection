@@ -56,7 +56,7 @@ def test_admin_feedback_is_stored_as_audit_history(monkeypatch):
     row = {"_id": target, "name": "Acme", "phone": "123456789", "website": None,
         "service_title": "Design", "description": "Detailed design service", "package_details": "Research and design deliverables",
         "risk_factors": [{"code": "thin_description", "triggered": True}], "trust_factors": [{}],
-        "mandatory_services": [{}], "assessment_version": "ai-only-v2", "intelligence": {"model_provenance": {"status": "complete", "model": "llama3.2:3b", "fallback_used": False}}, "admin_feedback": []}
+        "mandatory_services": [{}], "assessment_version": "ai-image-v3", "intelligence": {"model_provenance": {"status": "complete", "model": "qwen3:1.7b", "fallback_used": False}}, "admin_feedback": []}
     collection = Mock(); collection.find_one.return_value = row; collection.find.return_value = [row]
     assessment_collection = Mock(); assessment_collection.find_one.return_value = row
     uploads_collection = Mock(); uploads_collection.find.return_value = []

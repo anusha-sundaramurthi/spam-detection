@@ -15,14 +15,14 @@ EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF]")
 
 # These checks are mandatory for every submission and are surfaced prominently in the admin UI.
 MANDATORY_SCORING_SERVICES = [
-    {"code": "primary_ai", "name": "Primary AI scoring: llama3.2:3b", "required": True},
-    {"code": "backup_ai", "name": "Backup AI scoring: qwen2.5:3b", "required": True},
+    {"code": "primary_ai", "name": "Primary AI scoring: qwen3:1.7b", "required": True},
+    {"code": "backup_ai", "name": "Backup AI scoring: gemma3:1b", "required": True},
     {"code": "content_evidence", "name": "Zero-weight content-pattern evidence", "required": True},
     {"code": "duplicate_evidence", "name": "Zero-weight duplicate/campaign evidence", "required": True},
     {"code": "url_evidence", "name": "Zero-weight optional URL evidence", "required": True},
     {"code": "address_package_offer_evidence", "name": "Zero-weight address, package, and offer spam evidence", "required": True},
     {"code": "image_verification", "name": "Backend image integrity and duplicate evidence", "required": True},
-    {"code": "vision_ai", "name": "Local vision relevance and visual-spam assessment for supplied images", "required": True},
+    {"code": "vision_ai", "name": "Local vision relevance and visual-spam assessment: moondream:1.8b", "required": True},
 ]
 
 

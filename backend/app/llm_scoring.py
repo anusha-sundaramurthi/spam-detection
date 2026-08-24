@@ -1,6 +1,6 @@
 """
-Purpose: Produces AI-only trust and spam scores with Llama as the primary local
-Ollama model, Qwen as fallback, strict JSON validation, and model provenance.
+Purpose: Produces AI-only trust and spam scores with lightweight Qwen as the
+primary local Ollama model, Gemma as fallback, strict validation, and provenance.
 """
 import json
 import os
@@ -12,8 +12,8 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-PRIMARY_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
-BACKUP_MODEL = os.getenv("OLLAMA_BACKUP_MODEL", "qwen2.5:3b")
+PRIMARY_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
+BACKUP_MODEL = os.getenv("OLLAMA_BACKUP_MODEL", "gemma3:1b")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "1000"))
 
 # FIX: serialize every Ollama call app-wide. Without this, concurrent requests
@@ -133,7 +133,7 @@ def unavailable(reasons: list[str] | str) -> dict:
             "spam_indicators": reasons, "trust_indicators": [], "summary": "Both local AI scoring models were unavailable or invalid."}
 
 
-# Runs Llama first and automatically uses Qwen only if the primary attempt fails.
+# Runs lightweight Qwen first and automatically uses Gemma only if the primary attempt fails.
 def assess_with_local_llm(data, evidence: dict | None = None) -> dict[str, Any]:
     """Return a validated AI-only assessment with complete fallback provenance."""
     failures = []

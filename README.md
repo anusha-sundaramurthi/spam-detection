@@ -1,12 +1,12 @@
 # onivah spam detection demo
 
-Demo-only React + FastAPI system with a separate MongoDB database and AI-only local Ollama scoring. Llama is primary and Qwen is the automatic backup. Deterministic checks provide zero-weight evidence only. Vendors see status only; scores and reasons are admin-only.
+Demo-only React + FastAPI system with a separate MongoDB database and AI-only local Ollama scoring. Lightweight Qwen is primary and Gemma is the automatic backup. Deterministic checks provide zero-weight evidence only. Vendors see status only; scores and reasons are admin-only.
 
-Submission processing is save-first: React sends one multipart request, FastAPI validates and stores the raw record with `created_at`, `updated_at`, and `assessment_status: pending`, then a backend task reloads that MongoDB document, constructs the validated scoring input, and runs all assessment services. Address, package, price, and offer fields are included in spam detection. Optional images are verified on the backend by signature, dimensions, and SHA-256 duplicate detection; the configured text-only Llama/Qwen models do not claim visual scene understanding.
+Submission processing is save-first: React sends one multipart request, FastAPI validates and stores the raw record with `created_at`, `updated_at`, and `assessment_status: pending`, then a backend task reloads that MongoDB document, constructs the validated scoring input, and runs all assessment services. Address, package, price, and offer fields are included in spam detection. Optional images are verified on the backend by signature, dimensions, and SHA-256 duplicate detection; the configured text-only Qwen/Gemma models do not claim visual scene understanding.
 
 MongoDB is normalized into exactly three application collections: `submissions` contains vendor form and workflow data, `assessments` contains text/AI scores and reviewer history, and `upload_records` contains protected file metadata plus persisted per-image relevance, visual-spam, integrity, and duplicate results. Every document has `created_at` and `updated_at`. Admin API reads join these collections without triggering new inference.
 
-Actual image relevance and visual-spam inspection requires the separate local vision model configured by `OLLAMA_VISION_MODEL` (default `llama3.2-vision:11b`). Install it once with `ollama pull llama3.2-vision:11b`. If supplied images cannot be inspected, their stored status is `unavailable`, the submission becomes `image_ai_unavailable`, and approval remains blocked; the system never labels an uninspected image as safe.
+Actual image relevance and visual-spam inspection requires the lightweight local vision model configured by `OLLAMA_VISION_MODEL` (default `moondream:1.8b`). Install it once with `ollama pull moondream:1.8b`. If supplied images cannot be inspected, their stored status is `unavailable`, the submission becomes `image_ai_unavailable`, and approval remains blocked; the system never labels an uninspected image as safe.
 
 Both `LLM_TIMEOUT_SECONDS` and `VISION_TIMEOUT_SECONDS` default to 1000 seconds for slower local hardware. Admin details persist and display the factor ledger, points added to risk, trust points awarded, the reduction from the maximum trust score, and the evidence-specific reasons. The vendor form exposes one action only: `Submit service`; assessment always reloads the stored MongoDB record and runs privately in the backend.
 
@@ -20,8 +20,9 @@ Both `LLM_TIMEOUT_SECONDS` and `VISION_TIMEOUT_SECONDS` default to 1000 seconds 
 
 ## Mandatory scoring services
 
-- **Primary AI scoring (`llama3.2:3b`)**
-- **Backup AI scoring (`qwen2.5:3b`)**
+- **Primary AI scoring (`qwen3:1.7b`)**
+- **Backup AI scoring (`gemma3:1b`)**
+- **Image assessment (`moondream:1.8b`) when images are supplied**
 - **Zero-weight description, package, and offer evidence detection**
 - **Zero-weight duplicate and campaign evidence detection**
 - **Zero-weight optional URL evidence detection**
@@ -63,8 +64,9 @@ onivah-mongodb-ai-demo/
 Requirements: Python 3.11+, Node 20+, MongoDB, and Ollama.
 
 ```powershell
-ollama pull llama3.2:3b
-ollama pull qwen2.5:3b
+ollama pull qwen3:1.7b
+ollama pull gemma3:1b
+ollama pull moondream:1.8b
 
 cd backend
 python -m venv .venv
@@ -88,7 +90,7 @@ Demo logins (change in `.env`): vendor `vendor@example.com` / `vendor-demo`; adm
 
 ## Scoring model
 
-Both risk and trust ledgers total 10 available points and are generated exclusively by the successful local AI model. Llama is attempted first; Qwen is attempted only when Llama fails or returns invalid structured output. If both fail, scores remain empty, the assessment is marked `ai_unavailable`, and admin approval is blocked. Deterministic content, URL, duplicate, and trust checks remain visible evidence with `scoring_weight: 0`.
+Both risk and trust ledgers total 10 available points and are generated exclusively by the successful local AI model. Qwen is attempted first; Gemma is attempted only when Qwen fails or returns invalid structured output. If both fail, scores remain empty, the assessment is marked `ai_unavailable`, and admin approval is blocked. Deterministic content, URL, duplicate, and trust checks remain visible evidence with `scoring_weight: 0`.
 
 This is advisory demo output. Do not use it as the sole basis for vendor approval or production enforcement.
 
@@ -96,7 +98,7 @@ This is advisory demo output. Do not use it as the sole basis for vendor approva
 
 - Exact rule-matched phrases are highlighted in an admin-only spam evidence map.
 - Counterfactuals estimate how much each triggered rule contributes to the combined risk score.
-- Every assessment records whether primary Llama or fallback Qwen produced the score.
+- Every assessment records whether primary Qwen or fallback Gemma produced the score.
 - Similar submissions are clustered into stable campaign identifiers using content, phone, and website evidence.
 - Structured admin feedback records confirmed spam, false positives, accurate low-risk results, and unresolved reviews as an audit history. Feedback never silently retrains the model or changes scoring weights.
 

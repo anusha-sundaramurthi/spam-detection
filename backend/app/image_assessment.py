@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .uploads import resolve_upload
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llama3.2-vision:11b")
+VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "moondream:1.8b")
 VISION_TIMEOUT = float(os.getenv("VISION_TIMEOUT_SECONDS", "1000"))
 
 

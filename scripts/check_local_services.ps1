@@ -10,19 +10,19 @@ try {
     Write-Host "MongoDB (mandatory):" $(if ($mongo.TcpTestSucceeded) { 'READY' } else { 'NOT READY' })
 } catch { Write-Host 'MongoDB (mandatory): NOT READY' }
 
-# Ollama needs at least one configured model; Qwen is the automatic backup for Llama.
+# Ollama uses lightweight Qwen for primary text scoring and Gemma as fallback.
 try {
     $tags = Invoke-RestMethod -Uri 'http://localhost:11434/api/tags' -TimeoutSec 5
-    $installed = @($tags.models.name) -contains 'llama3.2:3b'
-    $backupInstalled = @($tags.models.name) -contains 'qwen2.5:3b'
-    $visionInstalled = @($tags.models.name) -contains 'llama3.2-vision:11b'
+    $installed = @($tags.models.name) -contains 'qwen3:1.7b'
+    $backupInstalled = @($tags.models.name) -contains 'gemma3:1b'
+    $visionInstalled = @($tags.models.name) -contains 'moondream:1.8b'
     Write-Host "Ollama runtime (mandatory): READY"
-    Write-Host "llama3.2:3b model (mandatory):" $(if ($installed) { 'READY' } else { 'NOT INSTALLED' })
-    Write-Host "qwen2.5:3b backup model (mandatory):" $(if ($backupInstalled) { 'READY' } else { 'NOT INSTALLED' })
-    Write-Host "llama3.2-vision:11b image model (mandatory with images):" $(if ($visionInstalled) { 'READY' } else { 'NOT INSTALLED' })
+    Write-Host "qwen3:1.7b model (mandatory):" $(if ($installed) { 'READY' } else { 'NOT INSTALLED' })
+    Write-Host "gemma3:1b backup model (mandatory):" $(if ($backupInstalled) { 'READY' } else { 'NOT INSTALLED' })
+    Write-Host "moondream:1.8b image model (mandatory with images):" $(if ($visionInstalled) { 'READY' } else { 'NOT INSTALLED' })
 } catch {
     Write-Host 'Ollama runtime (mandatory): NOT READY'
-    Write-Host 'llama3.2:3b model (mandatory): NOT VERIFIED'
-    Write-Host 'qwen2.5:3b backup model (mandatory): NOT VERIFIED'
-    Write-Host 'llama3.2-vision:11b image model (mandatory with images): NOT VERIFIED'
+    Write-Host 'qwen3:1.7b model (mandatory): NOT VERIFIED'
+    Write-Host 'gemma3:1b backup model (mandatory): NOT VERIFIED'
+    Write-Host 'moondream:1.8b image model (mandatory with images): NOT VERIFIED'
 }
