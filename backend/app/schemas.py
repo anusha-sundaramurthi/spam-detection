@@ -100,6 +100,7 @@ class VendorSubmission(VendorReceipt):
 class AdminSummary(BaseModel):
     id: str
     created_at: datetime
+    updated_at: datetime
     name: str
     email: str
     service_title: str
@@ -114,9 +115,12 @@ class AdminSummary(BaseModel):
     fallback_used: bool = False
     similar_count: int = 0
     feedback_verdict: str | None = None
+    image_assessment_summary: dict = Field(default_factory=dict)
 
 
 class AdminDetail(AdminSummary):
+    assessment_created_at: datetime | None = None
+    assessment_updated_at: datetime | None = None
     phone: str
     website: str | None
     address_line1: str
@@ -135,14 +139,16 @@ class AdminDetail(AdminSummary):
     package_details: str | None
     price_or_range: str | None
     special_offer: str | None = None
-    images: list[dict] = []
+    images: list[dict] = Field(default_factory=list)
     file: dict | None = None
-    risk_factors: list[dict] = []
-    trust_factors: list[dict] = []
-    mandatory_services: list[dict] = []
+    image_assessments: list[dict] = Field(default_factory=list)
+    risk_factors: list[dict] = Field(default_factory=list)
+    trust_factors: list[dict] = Field(default_factory=list)
+    mandatory_services: list[dict] = Field(default_factory=list)
     rule_assessment: dict | None = None
     ai_assessment: dict | None = None
     combined_assessment: dict | None = None
-    intelligence: dict = {}
-    campaign: dict = {}
-    admin_feedback: list[dict] = []
+    score_explanation: dict = Field(default_factory=dict)
+    intelligence: dict = Field(default_factory=dict)
+    campaign: dict = Field(default_factory=dict)
+    admin_feedback: list[dict] = Field(default_factory=list)

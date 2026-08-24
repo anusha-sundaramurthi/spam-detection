@@ -1,6 +1,6 @@
 <#
-Purpose: Verifies MongoDB, Ollama, primary llama3.2:3b, and backup qwen2.5:3b
-readiness before the AI-only demo is started.
+Purpose: Verifies MongoDB, Ollama, both text models, and the separate vision
+model used whenever a vendor supplies service images.
 #>
 $ErrorActionPreference = 'Stop'
 
@@ -15,11 +15,14 @@ try {
     $tags = Invoke-RestMethod -Uri 'http://localhost:11434/api/tags' -TimeoutSec 5
     $installed = @($tags.models.name) -contains 'llama3.2:3b'
     $backupInstalled = @($tags.models.name) -contains 'qwen2.5:3b'
+    $visionInstalled = @($tags.models.name) -contains 'llama3.2-vision:11b'
     Write-Host "Ollama runtime (mandatory): READY"
     Write-Host "llama3.2:3b model (mandatory):" $(if ($installed) { 'READY' } else { 'NOT INSTALLED' })
     Write-Host "qwen2.5:3b backup model (mandatory):" $(if ($backupInstalled) { 'READY' } else { 'NOT INSTALLED' })
+    Write-Host "llama3.2-vision:11b image model (mandatory with images):" $(if ($visionInstalled) { 'READY' } else { 'NOT INSTALLED' })
 } catch {
     Write-Host 'Ollama runtime (mandatory): NOT READY'
     Write-Host 'llama3.2:3b model (mandatory): NOT VERIFIED'
     Write-Host 'qwen2.5:3b backup model (mandatory): NOT VERIFIED'
+    Write-Host 'llama3.2-vision:11b image model (mandatory with images): NOT VERIFIED'
 }

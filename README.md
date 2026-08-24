@@ -4,6 +4,12 @@ Demo-only React + FastAPI system with a separate MongoDB database and AI-only lo
 
 Submission processing is save-first: React sends one multipart request, FastAPI validates and stores the raw record with `created_at`, `updated_at`, and `assessment_status: pending`, then a backend task reloads that MongoDB document, constructs the validated scoring input, and runs all assessment services. Address, package, price, and offer fields are included in spam detection. Optional images are verified on the backend by signature, dimensions, and SHA-256 duplicate detection; the configured text-only Llama/Qwen models do not claim visual scene understanding.
 
+MongoDB is normalized into exactly three application collections: `submissions` contains vendor form and workflow data, `assessments` contains text/AI scores and reviewer history, and `upload_records` contains protected file metadata plus persisted per-image relevance, visual-spam, integrity, and duplicate results. Every document has `created_at` and `updated_at`. Admin API reads join these collections without triggering new inference.
+
+Actual image relevance and visual-spam inspection requires the separate local vision model configured by `OLLAMA_VISION_MODEL` (default `llama3.2-vision:11b`). Install it once with `ollama pull llama3.2-vision:11b`. If supplied images cannot be inspected, their stored status is `unavailable`, the submission becomes `image_ai_unavailable`, and approval remains blocked; the system never labels an uninspected image as safe.
+
+Both `LLM_TIMEOUT_SECONDS` and `VISION_TIMEOUT_SECONDS` default to 1000 seconds for slower local hardware. Admin details persist and display the factor ledger, points added to risk, trust points awarded, the reduction from the maximum trust score, and the evidence-specific reasons. The vendor form exposes one action only: `Submit service`; assessment always reloads the stored MongoDB record and runs privately in the backend.
+
 ## Automatic workflow
 
 1. Vendor signs in and submits the business, service, package, pricing, delivery, and offer details.

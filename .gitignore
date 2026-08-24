@@ -9,4 +9,5 @@ dist/
 .env
 .pytest_cache/
 .pytest-runtime/
+.pytest-*/
 backend/uploads/

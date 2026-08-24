@@ -3,7 +3,6 @@
  * optional identity/media inputs, and starts private automatic assessment.
  */
 import {useState} from 'react';
-import {Link} from 'react-router-dom';
 import {CheckCircle2,Send} from 'lucide-react';
 import {api} from '../api';
 import {Field} from '../components';
@@ -23,7 +22,7 @@ export default function VendorForm(){
   const change=e=>{const value=e.target.name==='gst_number'?e.target.value.toUpperCase():e.target.value;setForm({...form,[e.target.name]:value});if(e.target.name==='social_links')setSocialInvalid(false)};
   // Sends one submission request while every upload and assessment operation stays in the backend.
   async function submit(e){e.preventDefault();setAttempted(true);setError('');if(!e.currentTarget.checkValidity()){setError('Please correct the highlighted required fields or invalid formats.');e.currentTarget.querySelector(':invalid')?.focus();return}if(invalidSocialLinks(form.social_links)){setSocialInvalid(true);setError('Each social link must be a complete http:// or https:// URL.');return}const uploadError=validateUploads(images,attachment);if(uploadError){setUploadInvalid(true);setError(uploadError);return}setBusy(true);try{const data={...form,website:form.website||null,portfolio_link:form.portfolio_link||null,package_name:form.package_name||null,package_details:form.package_details||null,price_or_range:form.price_or_range||null,aadhaar_number:form.aadhaar_number||null,gst_number:form.gst_number||null,social_links:form.social_links.split('\n').map(x=>x.trim()).filter(Boolean),business_registration:form.business_registration||null,special_offer:form.special_offer||null};setResult(await api.vendorCreate(data,images,attachment))}catch(e){setError(e.message)}finally{setBusy(false)}}
-  if(result)return <div className="result-card"><CheckCircle2 size={40}/><h1>Submitted for review</h1><p>Your service and optional media were submitted. Internal scores remain visible only to administrators.</p><Link className="button primary" to="/vendor">View my submissions</Link></div>;
+  if(result)return <div className="result-card"><CheckCircle2 size={40}/><h1>Submitted for review</h1><p>Your service and optional media were submitted. Internal scores remain visible only to administrators.</p></div>;
   return <><header><div><p className="eyebrow">VENDOR PORTAL</p><h1>Register your service</h1><p>Fields marked <b className="required-star">*</b> are required. Screening runs privately in the background.</p></div></header><form noValidate className={`panel form ${attempted?'validated':''}`} onSubmit={submit}>
     <div className="form-section"><h2>Business and service</h2><div className="grid">
       <Field required label="Business name"><input required minLength="2" name="name" value={form.name} onChange={change}/></Field><Field required label="Category"><select required name="category" value={form.category} onChange={change}><option>Venues</option><option>Catering</option><option>Photography & Videography</option><option>Decor & Florist</option><option>Wedding Planning</option><option>DJ & Entertainment</option><option>Makeup & Bridal</option><option>Invitations & Stationery</option><option>Other</option></select></Field>

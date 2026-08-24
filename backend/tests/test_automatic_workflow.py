@@ -37,6 +37,19 @@ def test_vendor_submission_stores_then_queues_assessment_without_scores(monkeypa
     assert set(receipt.model_dump()) == {"id", "status", "created_at", "message"}
 
 
+# Confirms score arithmetic stores both risk additions and trust reductions for admins.
+def test_score_explanation_records_reduction_reasons(monkeypatch):
+    payload = VendorInput(name="Acme", phone="9876543210", address_line1="10 Market Road", address_line2="Suite 2",
+        city="Chennai", state="Tamil Nadu", country="India", pincode="600001", service_title="Event photography",
+        description="Wedding photography with consultation, full-day coverage, editing, and a private client gallery.", category="Photography")
+    monkeypatch.setattr(main, "assess_with_local_llm", lambda *_args: {"status":"complete","model":"test","primary_model":"test","backup_model":"backup","fallback_used":False,"attempted_models":["test"],"risk_score":3.0,"trust_score":6.0,"confidence":80,
+        "risk_factors":[{"code":"ai_risk_1","label":"Urgency","reason":"Urgency language was detected.","points":3,"max_points":10,"triggered":True}],"trust_factors":[{"code":"ai_trust_1","label":"Details","reason":"Clear deliverables were supplied.","points":6,"max_points":10,"earned":True}],"summary":"Some promotional risk."})
+    result = main.assessment_fields(payload, [])
+    assert result["score_explanation"]["risk"]["points_added"] == 3.0
+    assert result["score_explanation"]["trust"]["points_reduced"] == 4.0
+    assert result["score_explanation"]["trust"]["reduction_reasons"] == ["Urgency language was detected."]
+
+
 # Confirms structured false-positive feedback is appended and returned to admins.
 def test_admin_feedback_is_stored_as_audit_history(monkeypatch):
     target = ObjectId()
@@ -45,8 +58,13 @@ def test_admin_feedback_is_stored_as_audit_history(monkeypatch):
         "risk_factors": [{"code": "thin_description", "triggered": True}], "trust_factors": [{}],
         "mandatory_services": [{}], "assessment_version": "ai-only-v2", "intelligence": {"model_provenance": {"status": "complete", "model": "llama3.2:3b", "fallback_used": False}}, "admin_feedback": []}
     collection = Mock(); collection.find_one.return_value = row; collection.find.return_value = [row]
+    assessment_collection = Mock(); assessment_collection.find_one.return_value = row
+    uploads_collection = Mock(); uploads_collection.find.return_value = []
     monkeypatch.setattr(main, "submissions", collection)
+    monkeypatch.setattr(main, "assessments", assessment_collection)
+    monkeypatch.setattr(main, "upload_records", uploads_collection)
     result = main.save_feedback(str(target), AdminFeedbackInput(verdict="false_positive", notes="Legitimate concise listing", factor_codes=["thin_description"]), {"sub": "admin@example.com", "role": "admin"})
-    pushed = collection.update_one.call_args.args[1]["$push"]["admin_feedback"]
+    pushed = assessment_collection.update_one.call_args.args[1]["$push"]["admin_feedback"]
     assert pushed["verdict"] == "false_positive"
+    assert "created_at" in pushed and "updated_at" in pushed
     assert result["feedback_verdict"] == "false_positive"

@@ -1,6 +1,6 @@
 """
-Purpose: Owns the isolated MongoDB client, submissions collection, indexes,
-and compatibility migrations for records created by earlier demo versions.
+Purpose: Owns the three isolated MongoDB collections—submissions, assessments,
+and upload records—plus their indexes and compatibility timestamps.
 """
 
 import os
@@ -13,6 +13,7 @@ MONGODB_DB = os.getenv("MONGODB_DB", "vendor_trust_demo")
 client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
 database = client[MONGODB_DB]
 submissions = database["submissions"]
+assessments = database["assessments"]
 upload_records = database["upload_records"]
 
 
@@ -21,12 +22,15 @@ def initialize_database() -> None:
     """Create non-destructive indexes within the dedicated demo database."""
     client.admin.command("ping")
     submissions.create_index([("created_at", DESCENDING)])
-    submissions.create_index([("risk_level", ASCENDING)])
     submissions.create_index([("email_normalized", ASCENDING)])
     submissions.create_index([("phone_normalized", ASCENDING)])
-    submissions.create_index([("admin_feedback.verdict", ASCENDING)])
+    assessments.create_index([("submission_id", ASCENDING)], unique=True)
+    assessments.create_index([("risk_level", ASCENDING)])
+    assessments.create_index([("created_at", DESCENDING)])
+    assessments.create_index([("admin_feedback.verdict", ASCENDING)])
     upload_records.create_index([("storage_name", ASCENDING)], unique=True)
     upload_records.create_index([("owner", ASCENDING), ("linked", ASCENDING)])
+    upload_records.create_index([("submission_id", ASCENDING), ("kind", ASCENDING)])
     # Make databases created by earlier demo revisions compatible with the role workflow.
     submissions.update_many({"vendor_id": {"$exists": False}}, {"$set": {"vendor_id": "vendor@example.com"}})
     submissions.update_many({"status": {"$exists": False}}, {"$set": {"status": "pending"}})
@@ -35,6 +39,23 @@ def initialize_database() -> None:
     now = datetime.now(timezone.utc)
     submissions.update_many({"created_at": {"$exists": False}}, {"$set": {"created_at": now}})
     submissions.update_many({"updated_at": {"$exists": False}}, [{"$set": {"updated_at": {"$ifNull": ["$assessed_at", "$created_at"]}}}])
+    assessments.update_many({"created_at": {"$exists": False}}, {"$set": {"created_at": now}})
+    assessments.update_many({"updated_at": {"$exists": False}}, [{"$set": {"updated_at": {"$ifNull": ["$assessed_at", "$created_at"]}}}])
+    upload_records.update_many({"created_at": {"$exists": False}}, [{"$set": {"created_at": {"$ifNull": ["$uploaded_at", now]}}}])
+    upload_records.update_many({"updated_at": {"$exists": False}}, [{"$set": {"updated_at": "$created_at"}}])
+    # Copy embedded legacy assessments into the normalized collection without deleting source data.
+    assessment_fields = {"assessment_version", "assessment_status", "assessed_at", "rule_assessment", "risk_factors",
+                         "trust_factors", "mandatory_services", "ai_assessment", "combined_assessment", "intelligence",
+                         "trust_score", "risk_score", "confidence", "risk_level", "admin_feedback", "image_assessments",
+                         "image_assessment_summary"}
+    assessment_fields.add("score_explanation")
+    for row in submissions.find({"assessment_version": {"$exists": True}}):
+        if assessments.count_documents({"submission_id": row["_id"]}, limit=1):
+            continue
+        migrated = {key: row[key] for key in assessment_fields if key in row}
+        migrated.update(submission_id=row["_id"], created_at=row.get("assessed_at", row["created_at"]),
+                        updated_at=row.get("updated_at", row["created_at"]))
+        assessments.insert_one(migrated)
     # Supply safe compatibility values for records made before package fields became mandatory.
     submissions.update_many({"package_name": {"$exists": False}}, {"$set": {"package_name": "Legacy service package"}})
     submissions.update_many({"package_details": {"$exists": False}}, {"$set": {"package_details": "Package details were not captured by the earlier demo version."}})

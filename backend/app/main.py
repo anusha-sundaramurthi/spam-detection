@@ -14,7 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .auth import login, require_role
-from .database import initialize_database, submissions, upload_records
+from .database import assessments, initialize_database, submissions, upload_records
+from .image_assessment import assess_submission_images
 from .intelligence import build_intelligence, campaign_metadata, find_similar_submissions
 from .llm_scoring import assess_with_local_llm, combine
 from .schemas import AdminDetail, AdminFeedbackInput, AdminSummary, LoginInput, VendorInput, VendorReceipt, VendorSubmission
@@ -53,10 +54,20 @@ def assessment_fields(payload: VendorInput, prior: list[dict]) -> dict:
     """Keep deterministic, AI, combined, and explainability outputs synchronized."""
     evidence = analyze_vendor(payload, prior); ai = assess_with_local_llm(payload, evidence); combined = combine(evidence, ai)
     intelligence = build_intelligence(payload, evidence, ai, combined)
-    return {"assessment_version": "ai-only-v2", "assessment_status": "complete" if ai["status"] == "complete" else "ai_unavailable", "assessed_at": datetime.now(timezone.utc),
+    risk_reasons = [factor["reason"] for factor in ai.get("risk_factors", []) if factor.get("points", 0) > 0]
+    trust_reduction = round(10 - (combined.get("trust_score") or 0), 1) if ai["status"] == "complete" else None
+    score_explanation = {
+        "risk": {"starting_score": 0, "points_added": combined.get("risk_score"), "final_score": combined.get("risk_score"),
+                 "reasons": risk_reasons, "explanation": "Risk begins at 0; the model adds points only for identified spam-risk evidence."},
+        "trust": {"starting_score": 10, "points_awarded": combined.get("trust_score"), "points_reduced": trust_reduction,
+                  "final_score": combined.get("trust_score"), "awarded_reasons": [factor["reason"] for factor in ai.get("trust_factors", []) if factor.get("points", 0) > 0],
+                  "reduction_reasons": risk_reasons or ([ai.get("summary")] if ai.get("summary") else []),
+                  "explanation": "Trust is shown out of 10; points not awarded are displayed as the reduction from the maximum."},
+    }
+    return {"assessment_version": "ai-image-v3", "assessment_status": "complete" if ai["status"] == "complete" else "ai_unavailable", "assessed_at": datetime.now(timezone.utc),
         "rule_assessment": evidence, "risk_factors": ai.get("risk_factors", []), "trust_factors": ai.get("trust_factors", []),
         "mandatory_services": MANDATORY_SCORING_SERVICES, "ai_assessment": ai,
-        "combined_assessment": combined, "intelligence": intelligence, **combined}
+        "combined_assessment": combined, "score_explanation": score_explanation, "intelligence": intelligence, **combined}
 
 
 # ---------------------------------------------------------------------------
@@ -81,31 +92,69 @@ def assess_stored_submission(submission_id: ObjectId) -> None:
     row = submissions.find_one({"_id": submission_id})
     if not row:
         return
-    payload = VendorInput(**{field: row.get(field) for field in VendorInput.model_fields})
+    media = list(upload_records.find({"submission_id": submission_id}))
+    images = [{key: value for key, value in item.items() if key not in {"_id", "assessment"}}
+              for item in media if item.get("kind") == "image"]
+    attachment = next(({key: value for key, value in item.items() if key not in {"_id", "assessment"}}
+                       for item in media if item.get("kind") == "file"), None)
+    payload_data = {field: row.get(field) for field in VendorInput.model_fields}
+    payload_data.update(images=images, file=attachment)
+    payload = VendorInput(**payload_data)
     prior = [{"id": str(item["_id"]), "email": item.get("email"), "phone": item.get("phone"),
               "description": item.get("description", ""), "images": item.get("images", [])}
              for item in submissions.find({"_id": {"$ne": submission_id}})]
+    prior_hashes = {item.get("sha256") for item in upload_records.find({"submission_id": {"$ne": submission_id}, "kind": "image"}) if item.get("sha256")}
+    image_results = assess_submission_images(images, payload.model_dump(), prior_hashes)
+    now = datetime.now(timezone.utc)
+    for result in image_results:
+        upload_records.update_one({"submission_id": submission_id, "storage_name": result["storage_name"]},
+                                  {"$set": {"assessment": result, "updated_at": now}})
     assessment = assessment_fields(payload, prior)
-    assessment["updated_at"] = datetime.now(timezone.utc)
-    submissions.update_one({"_id": submission_id}, {"$set": assessment})
+    complete_images = sum(item["status"] == "complete" for item in image_results)
+    if image_results and complete_images != len(image_results) and assessment["assessment_status"] == "complete":
+        assessment["assessment_status"] = "image_ai_unavailable"
+    assessment.update(image_assessments=image_results, image_assessment_summary={
+        "total": len(image_results), "complete": complete_images,
+        "unavailable": len(image_results) - complete_images,
+        "relevant": sum(item.get("relevance") == "relevant" for item in image_results),
+        "irrelevant": sum(item.get("relevance") == "irrelevant" for item in image_results),
+        "duplicates": sum(bool(item.get("duplicate")) for item in image_results),
+        "spam": sum(item.get("spam_detected") is True for item in image_results),
+    }, updated_at=now)
+    assessments.update_one({"submission_id": submission_id}, {"$set": assessment,
+                           "$setOnInsert": {"submission_id": submission_id, "created_at": now, "admin_feedback": []}}, upsert=True)
+    submissions.update_one({"_id": submission_id}, {"$set": {"assessment_status": assessment["assessment_status"], "updated_at": now}})
 
 
 # Re-scores exactly one stale/legacy record. Used only by the migration endpoint below,
 # never by a GET read path.
 def migrate_one(row: dict) -> None:
     """Upgrade a single legacy record to the current assessment version."""
-    payload = VendorInput(**{key: row.get(key) for key in VendorInput.model_fields})
-    prior = [{"id": str(x["_id"]), "email": x["email"], "phone": x["phone"], "description": x["description"]}
-             for x in submissions.find({"_id": {"$ne": row["_id"]}})]
-    update = assessment_fields(payload, prior)
-    update["updated_at"] = datetime.now(timezone.utc)
-    submissions.update_one({"_id": row["_id"]}, {"$set": update})
+    assess_stored_submission(row["_id"])
+
+
+# Joins the three MongoDB collections into the unchanged admin API shape.
+def joined_submission(row: dict) -> dict:
+    """Keep storage normalized while preserving frontend response compatibility."""
+    result = dict(row)
+    assessment = assessments.find_one({"submission_id": row["_id"]}) or {}
+    result.update({key: value for key, value in assessment.items() if key not in {"_id", "submission_id", "created_at", "updated_at"}})
+    result["assessment_created_at"] = assessment.get("created_at")
+    result["assessment_updated_at"] = assessment.get("updated_at")
+    media = list(upload_records.find({"submission_id": row["_id"]}))
+    cleaned = [{key: value for key, value in item.items() if key not in {"_id", "submission_id"}} for item in media]
+    result["images"] = [item for item in cleaned if item.get("kind") == "image"]
+    result["file"] = next((item for item in cleaned if item.get("kind") == "file"), None)
+    result.setdefault("image_assessments", [item["assessment"] for item in result["images"] if item.get("assessment")])
+    result.setdefault("image_assessment_summary", {"total": len(result["images"]), "complete": 0, "unavailable": len(result["images"]), "relevant": 0, "irrelevant": 0, "duplicates": 0, "spam": 0})
+    return result
 
 
 # Adds dynamic campaign and reviewer metadata to an admin-only record.
 # NOTE: no longer calls the LLM. It only enriches whatever is already stored.
 def enrich_admin(row: dict) -> dict:
     """Compute cross-submission intelligence at read time using stored data only."""
+    row = joined_submission(row)
     matches = find_similar_submissions(row, list(submissions.find()))
     feedback = row.get("admin_feedback", [])
     row["campaign"] = campaign_metadata(row, matches)
@@ -140,14 +189,15 @@ async def vendor_submit(background_tasks: BackgroundTasks, payload_json: str = F
     stored = await store_upload_batch(images, attachment, user["sub"])
     payload = payload.model_copy(update=stored)
     now = datetime.now(timezone.utc)
-    document = payload.model_dump() | {"created_at": now, "updated_at": now, "vendor_id": user["sub"], "status": "pending",
+    form_data = payload.model_dump(exclude={"images", "file"})
+    document = form_data | {"created_at": now, "updated_at": now, "vendor_id": user["sub"], "status": "pending",
         "assessment_status": "pending", "email_normalized": payload.email.lower(), "phone_normalized": re.sub(r"\D", "", payload.phone),
         "admin_feedback": []}
     result = submissions.insert_one(document)
     records = stored["images"] + ([stored["file"]] if stored["file"] else [])
     if records:
         upload_records.insert_many([record | {"linked": True, "submission_id": result.inserted_id,
-                                               "uploaded_at": now} for record in records])
+                                               "created_at": now, "updated_at": now} for record in records])
     background_tasks.add_task(assess_stored_submission, result.inserted_id)
     return VendorReceipt(id=str(result.inserted_id), status="pending", created_at=now)
 
@@ -183,10 +233,8 @@ def admin_detail(submission_id: str, user=Depends(admin_only)):
 @app.post("/api/admin/migrate")
 def migrate_stale(user=Depends(admin_only)):
     """Re-score legacy records on demand instead of silently on every read."""
-    stale = list(submissions.find({"$or": [
-        {"assessment_version": {"$ne": "ai-only-v2"}},
-        {"intelligence": {"$exists": False}},
-    ]}))
+    current_ids = set(assessments.distinct("submission_id", {"assessment_version": "ai-image-v3"}))
+    stale = list(submissions.find({"_id": {"$nin": list(current_ids)}}))
     for row in stale:
         migrate_one(row)
     return {"status": "ok", "migrated": len(stale)}
@@ -196,9 +244,8 @@ def migrate_stale(user=Depends(admin_only)):
 @app.get("/api/admin/uploads/{storage_name}")
 def admin_upload(storage_name: str, user=Depends(admin_only)):
     """Protect service images and documents from unauthenticated public access."""
-    row = submissions.find_one({"$or": [{"images.storage_name": storage_name}, {"file.storage_name": storage_name}]})
-    if not row: raise HTTPException(404, "Upload is not linked to a submission")
-    metadata = next((image for image in row.get("images", []) if image["storage_name"] == storage_name), row.get("file"))
+    metadata = upload_records.find_one({"storage_name": storage_name, "linked": True})
+    if not metadata: raise HTTPException(404, "Upload is not linked to a submission")
     return FileResponse(resolve_upload(storage_name), media_type=metadata["content_type"], filename=metadata["original_name"])
 
 
@@ -226,8 +273,10 @@ def save_feedback(submission_id: str, payload: AdminFeedbackInput, user=Depends(
     valid_codes = {factor["code"] for factor in row.get("risk_factors", [])}
     if any(code not in valid_codes for code in payload.factor_codes):
         raise HTTPException(422, "Feedback contains an unknown risk factor")
-    feedback = payload.model_dump() | {"created_at": datetime.now(timezone.utc), "admin_id": user["sub"]}
-    submissions.update_one({"_id": target}, {"$push": {"admin_feedback": feedback},
-                                               "$set": {"updated_at": datetime.now(timezone.utc)}})
+    now = datetime.now(timezone.utc)
+    feedback = payload.model_dump() | {"created_at": now, "updated_at": now, "admin_id": user["sub"]}
+    assessments.update_one({"submission_id": target}, {"$push": {"admin_feedback": feedback},
+                                               "$set": {"updated_at": now}})
+    submissions.update_one({"_id": target}, {"$set": {"updated_at": now}})
     row.setdefault("admin_feedback", []).append(feedback)
     return serialize(enrich_admin(row))
