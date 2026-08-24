@@ -2,9 +2,13 @@
 Purpose: Defines all validated API request and response contracts while keeping
 vendor-facing responses deliberately free of private trust and spam scores.
 """
-
+import phonenumbers
+from phonenumbers import NumberParseException
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
+import phonenumbers
+from phonenumbers import NumberParseException
+
 
 
 class LoginInput(BaseModel):
@@ -50,7 +54,36 @@ class VendorInput(BaseModel):
     def strip_required(cls, value):
         if not value.strip(): raise ValueError("must not be blank")
         return value.strip()
-
+    
+    # Rejects phone numbers that are structurally invalid or degenerate (e.g. 1234567, 9999999999).
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        digits = ''.join(filter(str.isdigit, value))
+        if len(set(digits)) <= 1:
+            raise ValueError("Phone number cannot be all the same repeated digit.")
+        try:
+            parsed = phonenumbers.parse(value, "IN")
+        except NumberParseException:
+            raise ValueError("Phone number format is invalid — check the digit count and characters.")
+        if not phonenumbers.is_possible_number(parsed):
+            raise ValueError("Phone number length/format is not valid for the selected region.")
+        return value
+    
+    # Rejects common typo email domains even though email is normally set from the authenticated login.
+    @field_validator("email")
+    @classmethod
+    def reject_typo_email_domain(cls, value: str | None) -> str | None:
+        if not value:
+            return value
+        if "@" not in value or "." not in value.split("@")[-1]:
+            raise ValueError("Email format is invalid.")
+        domain = value.split("@")[-1].lower()
+        typo_domains = {"gamil.com", "gmial.com", "gnail.com", "gmal.com", "yahho.com",
+                         "hotmial.com", "outlok.com", "gmaill.com", "yaho.com"}
+        if domain in typo_domains:
+            raise ValueError(f"'{domain}' looks like a misspelled email provider.")
+        return value
 
 class VendorReceipt(BaseModel):
     id: str

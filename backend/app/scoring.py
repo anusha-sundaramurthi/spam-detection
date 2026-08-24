@@ -6,6 +6,7 @@ these checks are explicitly zero-weight and never calculate final scores.
 import re
 from difflib import SequenceMatcher
 from urllib.parse import urlparse
+from app.deterministic_check import check_phone, check_email
 
 SPAM_TERMS = {"guaranteed", "act now", "limited time", "risk free", "100% free", "click here", "buy now", "instant profit", "earn money fast", "no questions asked"}
 SUSPICIOUS_URL_TERMS = {"bit.ly", "tinyurl.com", "t.co", "free-money", "crypto-giveaway", "login-verify"}
@@ -116,10 +117,28 @@ def analyze_vendor(data, prior_submissions: list[dict]) -> dict:
                   "source": "deterministic_evidence", "scoring_weight": 0})
     domain_match = website_ok and domain not in {"gmail.com", "outlook.com", "yahoo.com", "hotmail.com"} and domain.removeprefix("www.") == urlparse(data.website).netloc.lower().removeprefix("www.")
     trust_factor("domain_match", "Business email matches website", 2.0, "Email and website domains match." if domain_match else "Domains do not match or email is consumer-hosted.", domain_match)
+    email_check = check_email(data.email) if data.email else {"findings": []}
+    disposable_email = "disposable_email_domain" in email_check["findings"]
+    risk_factor("disposable_email", "Disposable or temporary email domain", 0,
+                f"Email domain '{domain}' is a known disposable/temp-mail provider." if disposable_email else
+                "Email domain is not on the disposable-provider list.", disposable_email)
+    no_mx = "no_mx_record" in email_check["findings"]
+    risk_factor("email_no_mx", "Email domain has no mail server", 0,
+                f"Domain '{domain}' has no valid MX record; email may be unreachable." if no_mx else
+                "Email domain resolves a valid MX record.", no_mx)
     trust_factor("description_depth", "Detailed service description", 1.5, f"Description contains {word_count} words." if not too_short else "Description lacks operational detail.", not too_short)
     package_complete = bool(data.package_name and data.package_details and data.price_or_range)
     trust_factor("package_transparency", "Optional package transparency", 1.5, "Package, inclusions, and price/range supplied." if package_complete else "Optional package or pricing details were not supplied; this is neutral.", package_complete)
     contact_complete = bool(data.email) and len(re.sub(r"\D", "", data.phone)) >= 7
     trust_factor("contact_completeness", "Authenticated contact information", 1.5, "Login email and phone are available." if contact_complete else "Phone contact is incomplete.", contact_complete)
+    phone_check = check_phone(data.phone, data.country or "IN") if data.phone else {"valid_format": False, "findings": []}
+    invalid_phone = not phone_check["valid_format"]
+    risk_factor("invalid_phone", "Invalid or unassigned phone number", 0,
+                "Phone number failed format/region validation." if invalid_phone else
+                "Phone number is a valid, dialable format for the declared region.", invalid_phone)
+    degenerate_phone = "degenerate_digit_pattern" in phone_check["findings"]
+    risk_factor("degenerate_phone", "Repeated or sequential phone digits", 0,
+                "Phone number is a repeated or sequential digit pattern (e.g. 9999999999)." if degenerate_phone else
+                "No repeated/sequential digit pattern detected in phone number.", degenerate_phone)
 
     return {"mode": "evidence_only", "scoring_weight": 0, "risk_evidence": risk, "trust_evidence": trust}

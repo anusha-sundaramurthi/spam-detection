@@ -59,18 +59,21 @@ def assessment_fields(payload: VendorInput, prior: list[dict]) -> dict:
         "combined_assessment": combined, "intelligence": intelligence, **combined}
 
 
-# Automatically upgrades and re-scores legacy records when required.
-def ensure_current_assessment(row: dict) -> dict:
-    """Automatically upgrade and rescore records created by earlier demo versions."""
-    if row.get("assessment_version") == "ai-only-v2" and row.get("intelligence"):
-        return row
-    payload = VendorInput(**{key: row.get(key) for key in VendorInput.model_fields})
-    prior = [{"id": str(x["_id"]), "email": x["email"], "phone": x["phone"], "description": x["description"]}
-             for x in submissions.find({"_id": {"$ne": row["_id"]}})]
-    update = assessment_fields(payload, prior)
-    update["updated_at"] = datetime.now(timezone.utc)
-    submissions.update_one({"_id": row["_id"]}, {"$set": update}); row.update(update); return row
-
+# ---------------------------------------------------------------------------
+# IMPORTANT FIX: scoring must never run inside a GET/read path.
+#
+# The old ensure_current_assessment() used to be called from every
+# admin_submissions()/admin_detail() GET request, which silently re-ran the
+# local LLM for any "stale" row on every single page load or refresh. With
+# several stale rows in the collection, one GET request could trigger many
+# sequential (or overlapping, if multiple GETs land close together) Ollama
+# calls, producing exactly the ReadTimeout pile-up seen in the logs.
+#
+# Scoring is now only triggered by:
+#   1. A new vendor submission (background task, one submission at a time).
+#   2. An explicit admin-triggered migration endpoint (below), so it happens
+#      once, on purpose, not implicitly on every read.
+# ---------------------------------------------------------------------------
 
 # Reloads a newly stored MongoDB document and assesses only that authoritative record.
 def assess_stored_submission(submission_id: ObjectId) -> None:
@@ -87,15 +90,27 @@ def assess_stored_submission(submission_id: ObjectId) -> None:
     submissions.update_one({"_id": submission_id}, {"$set": assessment})
 
 
+# Re-scores exactly one stale/legacy record. Used only by the migration endpoint below,
+# never by a GET read path.
+def migrate_one(row: dict) -> None:
+    """Upgrade a single legacy record to the current assessment version."""
+    payload = VendorInput(**{key: row.get(key) for key in VendorInput.model_fields})
+    prior = [{"id": str(x["_id"]), "email": x["email"], "phone": x["phone"], "description": x["description"]}
+             for x in submissions.find({"_id": {"$ne": row["_id"]}})]
+    update = assessment_fields(payload, prior)
+    update["updated_at"] = datetime.now(timezone.utc)
+    submissions.update_one({"_id": row["_id"]}, {"$set": update})
+
+
 # Adds dynamic campaign and reviewer metadata to an admin-only record.
+# NOTE: no longer calls the LLM. It only enriches whatever is already stored.
 def enrich_admin(row: dict) -> dict:
-    """Compute cross-submission intelligence at read time so new matches appear immediately."""
-    row = ensure_current_assessment(row)
+    """Compute cross-submission intelligence at read time using stored data only."""
     matches = find_similar_submissions(row, list(submissions.find()))
     feedback = row.get("admin_feedback", [])
     row["campaign"] = campaign_metadata(row, matches)
     row["similar_count"] = row["campaign"]["similar_count"]
-    provenance = row["intelligence"].get("model_provenance", {})
+    provenance = (row.get("intelligence") or {}).get("model_provenance", {})
     row["scoring_model"] = provenance.get("model")
     row["fallback_used"] = provenance.get("fallback_used", False)
     row["feedback_verdict"] = feedback[-1]["verdict"] if feedback else None
@@ -144,6 +159,7 @@ def vendor_submissions(user=Depends(vendor_only)):
 
 
 # Lists all automatically assessed submissions for administrators.
+# FIX: pure read — no scoring, no Ollama calls. Fast and safe to poll/refresh.
 @app.get("/api/admin/submissions", response_model=list[AdminSummary])
 def admin_submissions(user=Depends(admin_only)):
     """Expose internal scores only through the administrator-protected collection view."""
@@ -151,12 +167,29 @@ def admin_submissions(user=Depends(admin_only)):
 
 
 # Returns a full admin-only assessment and evidence breakdown.
+# FIX: pure read — no scoring, no Ollama calls.
 @app.get("/api/admin/submissions/{submission_id}", response_model=AdminDetail)
 def admin_detail(submission_id: str, user=Depends(admin_only)):
     """Return the complete evidence ledger for human review."""
     row = submissions.find_one({"_id": oid(submission_id)})
     if not row: raise HTTPException(404, "Submission not found")
     return serialize(enrich_admin(row))
+
+
+# NEW: explicit, admin-triggered migration. Re-scores only rows that are stale
+# (old assessment_version or missing intelligence). This is the ONLY place
+# besides new-submission background tasks where the LLM gets called for
+# existing records — never implicitly from a GET.
+@app.post("/api/admin/migrate")
+def migrate_stale(user=Depends(admin_only)):
+    """Re-score legacy records on demand instead of silently on every read."""
+    stale = list(submissions.find({"$or": [
+        {"assessment_version": {"$ne": "ai-only-v2"}},
+        {"intelligence": {"$exists": False}},
+    ]}))
+    for row in stale:
+        migrate_one(row)
+    return {"status": "ok", "migrated": len(stale)}
 
 
 # Streams a stored submission upload only to authenticated administrators.
