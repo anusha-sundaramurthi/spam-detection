@@ -18,6 +18,8 @@ def test_vendor_submission_stores_then_queues_assessment_without_scores(monkeypa
     collection = Mock()
     collection.insert_one.return_value = Mock(inserted_id=ObjectId())
     monkeypatch.setattr(main, "submissions", collection)
+    assessment_collection = Mock()
+    monkeypatch.setattr(main, "assessments", assessment_collection)
     monkeypatch.setattr(main, "upload_records", Mock())
     async def no_uploads(*_args): return {"images": [], "file": None}
     monkeypatch.setattr(main, "store_upload_batch", no_uploads)
@@ -30,10 +32,13 @@ def test_vendor_submission_stores_then_queues_assessment_without_scores(monkeypa
     receipt = asyncio.run(main.vendor_submit(tasks, payload.model_dump_json(), [], None,
                                              {"sub": "vendor@example.com", "role": "vendor"}))
     stored = collection.insert_one.call_args.args[0]
-    assert stored["assessment_status"] == "pending"
     assert stored["email"] == "vendor@example.com"
-    assert "risk_score" not in stored and "trust_score" not in stored
+    allowed = (set(VendorInput.model_fields) - {"images", "file"}) | {"vendor_id", "created_at", "updated_at"}
+    assert set(stored) == allowed
+    assert not ({"status", "assessment_status", "risk_score", "trust_score", "admin_feedback"} & set(stored))
     assert stored["created_at"] == stored["updated_at"] and len(tasks.tasks) == 1
+    pending = assessment_collection.insert_one.call_args.args[0]
+    assert pending["status"] == "pending" and pending["assessment_status"] == "pending"
     assert set(receipt.model_dump()) == {"id", "status", "created_at", "message"}
 
 

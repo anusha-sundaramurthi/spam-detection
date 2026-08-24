@@ -3,7 +3,6 @@ Purpose: Inserts realistic trusted and spam vendor examples into an empty demo
 database and processes them through the same automatic assessment pipeline.
 """
 from datetime import datetime, timezone
-import re
 from .database import assessments, submissions
 from .intelligence import build_intelligence
 from .llm_scoring import assess_with_local_llm, combine
@@ -21,9 +20,10 @@ def seed_if_empty():
     prior=[]
     for data in SEEDS:
         now=datetime.now(timezone.utc); rules=analyze_vendor(data,prior); ai=assess_with_local_llm(data,rules); combined=combine(rules,ai); intelligence=build_intelligence(data,rules,ai,combined)
-        doc=data.model_dump(exclude={"images","file"})|{"created_at":now,"updated_at":now,"vendor_id":"vendor@example.com","status":"pending","assessment_status":"complete" if ai["status"]=="complete" else "ai_unavailable","email_normalized":data.email.lower(),"phone_normalized":re.sub(r"\D","",data.phone)}
+        assessment_status="complete" if ai["status"]=="complete" else "ai_unavailable"
+        doc=data.model_dump(exclude={"images","file"})|{"created_at":now,"updated_at":now,"vendor_id":"vendor@example.com"}
         result=submissions.insert_one(doc)
         risk_reasons=[factor["reason"] for factor in ai["risk_factors"] if factor.get("points",0)>0]
         explanation={"risk":{"starting_score":0,"points_added":combined.get("risk_score"),"final_score":combined.get("risk_score"),"reasons":risk_reasons,"explanation":"Risk begins at 0; the model adds points only for identified spam-risk evidence."},"trust":{"starting_score":10,"points_awarded":combined.get("trust_score"),"points_reduced":round(10-(combined.get("trust_score") or 0),1) if ai["status"]=="complete" else None,"final_score":combined.get("trust_score"),"awarded_reasons":[factor["reason"] for factor in ai["trust_factors"] if factor.get("points",0)>0],"reduction_reasons":risk_reasons or [ai.get("summary")],"explanation":"Trust is shown out of 10; points not awarded are displayed as the reduction from the maximum."}}
-        assessments.insert_one({"submission_id":result.inserted_id,"created_at":now,"updated_at":now,"assessed_at":now,"assessment_version":"ai-image-v3","assessment_status":doc["assessment_status"],"admin_feedback":[],"image_assessments":[],"image_assessment_summary":{"total":0,"complete":0,"unavailable":0,"relevant":0,"irrelevant":0,"duplicates":0,"spam":0},"rule_assessment":rules,"risk_factors":ai["risk_factors"],"trust_factors":ai["trust_factors"],"mandatory_services":MANDATORY_SCORING_SERVICES,"ai_assessment":ai,"combined_assessment":combined,"score_explanation":explanation,"intelligence":intelligence,**combined})
+        assessments.insert_one({"submission_id":result.inserted_id,"status":"pending","created_at":now,"updated_at":now,"assessed_at":now,"assessment_version":"ai-image-v3","assessment_status":assessment_status,"admin_feedback":[],"image_assessments":[],"image_assessment_summary":{"total":0,"complete":0,"unavailable":0,"relevant":0,"irrelevant":0,"duplicates":0,"spam":0},"rule_assessment":rules,"risk_factors":ai["risk_factors"],"trust_factors":ai["trust_factors"],"mandatory_services":MANDATORY_SCORING_SERVICES,"ai_assessment":ai,"combined_assessment":combined,"score_explanation":explanation,"intelligence":intelligence,**combined})
         prior.append({"id":str(result.inserted_id),"email":data.email,"phone":data.phone,"description":data.description})

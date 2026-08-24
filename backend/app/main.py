@@ -5,8 +5,6 @@ admin workflows, including automatic assessment, migration, and approval.
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import re
-
 from bson import ObjectId
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import ValidationError
@@ -122,8 +120,8 @@ def assess_stored_submission(submission_id: ObjectId) -> None:
         "spam": sum(item.get("spam_detected") is True for item in image_results),
     }, updated_at=now)
     assessments.update_one({"submission_id": submission_id}, {"$set": assessment,
-                           "$setOnInsert": {"submission_id": submission_id, "created_at": now, "admin_feedback": []}}, upsert=True)
-    submissions.update_one({"_id": submission_id}, {"$set": {"assessment_status": assessment["assessment_status"], "updated_at": now}})
+                           "$setOnInsert": {"submission_id": submission_id, "status": "pending", "created_at": now,
+                                            "admin_feedback": []}}, upsert=True)
 
 
 # Re-scores exactly one stale/legacy record. Used only by the migration endpoint below,
@@ -141,6 +139,8 @@ def joined_submission(row: dict) -> dict:
     result.update({key: value for key, value in assessment.items() if key not in {"_id", "submission_id", "created_at", "updated_at"}})
     result["assessment_created_at"] = assessment.get("created_at")
     result["assessment_updated_at"] = assessment.get("updated_at")
+    result.setdefault("status", "pending")
+    result.setdefault("assessment_status", "pending")
     media = list(upload_records.find({"submission_id": row["_id"]}))
     cleaned = [{key: value for key, value in item.items() if key not in {"_id", "submission_id"}} for item in media]
     result["images"] = [item for item in cleaned if item.get("kind") == "image"]
@@ -190,10 +190,10 @@ async def vendor_submit(background_tasks: BackgroundTasks, payload_json: str = F
     payload = payload.model_copy(update=stored)
     now = datetime.now(timezone.utc)
     form_data = payload.model_dump(exclude={"images", "file"})
-    document = form_data | {"created_at": now, "updated_at": now, "vendor_id": user["sub"], "status": "pending",
-        "assessment_status": "pending", "email_normalized": payload.email.lower(), "phone_normalized": re.sub(r"\D", "", payload.phone),
-        "admin_feedback": []}
+    document = form_data | {"created_at": now, "updated_at": now, "vendor_id": user["sub"]}
     result = submissions.insert_one(document)
+    assessments.insert_one({"submission_id": result.inserted_id, "status": "pending", "assessment_status": "pending",
+                            "admin_feedback": [], "created_at": now, "updated_at": now})
     records = stored["images"] + ([stored["file"]] if stored["file"] else [])
     if records:
         upload_records.insert_many([record | {"linked": True, "submission_id": result.inserted_id,
@@ -205,7 +205,12 @@ async def vendor_submit(background_tasks: BackgroundTasks, payload_json: str = F
 # Lists only submissions owned by the authenticated vendor.
 @app.get("/api/vendor/submissions", response_model=list[VendorSubmission])
 def vendor_submissions(user=Depends(vendor_only)):
-    return [serialize(x) for x in submissions.find({"vendor_id": user["sub"]}).sort("created_at", -1)]
+    rows = []
+    for submission in submissions.find({"vendor_id": user["sub"]}).sort("created_at", -1):
+        workflow = assessments.find_one({"submission_id": submission["_id"]}, {"status": 1}) or {}
+        row = dict(submission); row["status"] = workflow.get("status", "pending")
+        rows.append(serialize(row))
+    return rows
 
 
 # Lists all automatically assessed submissions for administrators.
@@ -259,7 +264,7 @@ def approve(submission_id: str, user=Depends(admin_only)):
     if row.get("assessment_status") != "complete": raise HTTPException(409, "Automatic assessment is still incomplete")
     update = {"status": "approved", "approved_at": datetime.now(timezone.utc), "approved_by": user["sub"],
               "updated_at": datetime.now(timezone.utc)}
-    submissions.update_one({"_id": target}, {"$set": update}); row.update(update)
+    assessments.update_one({"submission_id": target}, {"$set": update}); row.update(update)
     return serialize(row)
 
 
@@ -277,6 +282,5 @@ def save_feedback(submission_id: str, payload: AdminFeedbackInput, user=Depends(
     feedback = payload.model_dump() | {"created_at": now, "updated_at": now, "admin_id": user["sub"]}
     assessments.update_one({"submission_id": target}, {"$push": {"admin_feedback": feedback},
                                                "$set": {"updated_at": now}})
-    submissions.update_one({"_id": target}, {"$set": {"updated_at": now}})
     row.setdefault("admin_feedback", []).append(feedback)
     return serialize(enrich_admin(row))
