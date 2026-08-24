@@ -91,14 +91,9 @@ def attempt_model(data, evidence: dict, model: str) -> tuple[dict | None, str | 
         # FIX: only one Ollama call in flight at a time, app-wide.
         with OLLAMA_LOCK:
             response = httpx.post(f"{OLLAMA_URL.rstrip('/')}/api/chat", timeout=LLM_TIMEOUT,
-                json={"model": model, "stream": False, "format": AIResult.model_json_schema(),
-                      # FIX: was "500-600" (a subtraction -> -100). Observed real
-                      # responses only ever use ~150-175 tokens for this schema.
-                      # 350 gives a safe buffer above that without letting the
-                      # model burn its way toward LLM_TIMEOUT on this hardware,
-                      # which generates at roughly 3 tokens/sec.
-                      "options": {"temperature": 0, "seed": 42, "num_predict": 350, "num_ctx": 4096},
-                      "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]})
+                json={"model": model, "stream": False, "format": AIResult.model_json_schema(), "think": False,
+                     "options": {"temperature": 0, "seed": 42, "num_predict": 350, "num_ctx": 4096},
+                     "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]})
         response.raise_for_status(); raw = response.json()["message"]["content"].strip()
         print(f"[RAW {model} OUTPUT]: {raw}")
         raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.I).strip()

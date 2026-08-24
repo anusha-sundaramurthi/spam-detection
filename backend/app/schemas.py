@@ -9,8 +9,6 @@ from pydantic import BaseModel, Field, field_validator
 import phonenumbers
 from phonenumbers import NumberParseException
 
-
-
 class LoginInput(BaseModel):
     username: str
     password: str
@@ -116,6 +114,7 @@ class AdminSummary(BaseModel):
     similar_count: int = 0
     feedback_verdict: str | None = None
     image_assessment_summary: dict = Field(default_factory=dict)
+    document_assessment_summary: dict | None = None  # NEW
 
 
 class AdminDetail(AdminSummary):
@@ -142,6 +141,7 @@ class AdminDetail(AdminSummary):
     images: list[dict] = Field(default_factory=list)
     file: dict | None = None
     image_assessments: list[dict] = Field(default_factory=list)
+    document_assessment: dict | None = None  # NEW
     risk_factors: list[dict] = Field(default_factory=list)
     trust_factors: list[dict] = Field(default_factory=list)
     mandatory_services: list[dict] = Field(default_factory=list)

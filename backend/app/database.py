@@ -44,6 +44,8 @@ def initialize_database() -> None:
                          "trust_score", "risk_score", "confidence", "risk_level", "admin_feedback", "image_assessments",
                          "image_assessment_summary", "method", "scoring_model", "fallback_used"}
     assessment_fields.add("score_explanation")
+    assessment_fields.add("document_assessment")
+    assessment_fields.add("document_assessment_summary")
     for row in submissions.find():
         migrated = {key: row[key] for key in assessment_fields if key in row}
         migrated.update(status=row.get("status", "pending"), assessment_status=row.get("assessment_status", migrated.get("assessment_status", "pending")))
