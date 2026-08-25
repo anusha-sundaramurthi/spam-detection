@@ -4,14 +4,18 @@ these checks are explicitly zero-weight and never calculate final scores.
 """
 
 import re
+import logging
 from difflib import SequenceMatcher
+from time import perf_counter
 from urllib.parse import urlparse
-from .deterministic_check import check_phone, check_email
+from .deterministic_check import check_phone
+from .logging_config import log_event
 
 SPAM_TERMS = {"guaranteed", "act now", "limited time", "risk free", "100% free", "click here", "buy now", "instant profit", "earn money fast", "no questions asked"}
 SUSPICIOUS_URL_TERMS = {"bit.ly", "tinyurl.com", "t.co", "free-money", "crypto-giveaway", "login-verify"}
 SOCIAL_HOSTS = {"linkedin.com", "facebook.com", "instagram.com", "x.com", "twitter.com", "youtube.com", "github.com"}
 EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF]")
+logger = logging.getLogger("vendor_trust.evidence")
 
 # These checks are mandatory for every submission and are surfaced prominently in the admin UI.
 MANDATORY_SCORING_SERVICES = [
@@ -48,6 +52,7 @@ def normalize(value: str) -> str:
 # Applies deterministic checks only to produce explainable zero-weight evidence.
 def analyze_vendor(data, prior_submissions: list[dict]) -> dict:
     """Return factual evidence without producing or influencing any score."""
+    started = perf_counter()
     risk, trust = [], []
 
     # Adds one possible spam-risk factor to the auditable ledger.
@@ -64,16 +69,28 @@ def analyze_vendor(data, prior_submissions: list[dict]) -> dict:
     website_present = bool(data.website and data.website.strip())
     website_ok = valid_url(data.website)
     risk_factor("invalid_url", "Invalid optional website URL", .5, "Supplied website is not a complete HTTP(S) URL." if website_present and not website_ok else "No website supplied; no penalty." if not website_present else "Website URL is structurally valid.", website_present and not website_ok)
-    suspicious_url = website_present and any(term in data.website.lower() for term in SUSPICIOUS_URL_TERMS)
-    risk_factor("suspicious_url", "Suspicious or shortened URL", 1.0, "Website contains a shortened or suspicious URL pattern." if suspicious_url else "No suspicious URL pattern found.", suspicious_url)
+    submitted_urls = {"website": data.website or "", "portfolio": data.portfolio_link or ""}
+    submitted_urls.update({f"social link {index + 1}": value for index, value in enumerate(data.social_links)})
+    suspicious_urls = {field: value for field, value in submitted_urls.items()
+                       if any(term in value.lower() for term in SUSPICIOUS_URL_TERMS)}
+    risk_factor("suspicious_url", "Suspicious or shortened URL", 1.0,
+                "; ".join(f"{field}: {value}" for field, value in suspicious_urls.items()) if suspicious_urls else
+                "No suspicious pattern found in website, portfolio, or social URLs.", bool(suspicious_urls))
 
     text_fields = {
-        "service title": data.service_title, "description": data.description,
-        "address": " ".join([data.address_line1, data.address_line2, data.city, data.state, data.country, data.pincode]),
+        "vendor name": data.name, "phone": data.phone, "website": data.website or "",
+        "address line 1": data.address_line1, "address line 2": data.address_line2,
+        "city": data.city, "state": data.state, "country": data.country, "pincode": data.pincode,
+        "aadhaar number": data.aadhaar_number or "", "GST number": data.gst_number or "",
+        "portfolio link": data.portfolio_link or "", "service title": data.service_title,
+        "description": data.description, "category": data.category,
+        "social links": " ".join(data.social_links),
+        "business registration": data.business_registration or "",
         "package name": data.package_name or "", "package details": data.package_details or "",
         "price": data.price_or_range or "", "special offer": data.special_offer or "",
     }
-    combined_text = " ".join(text_fields.values()).lower()
+    combined_original = " ".join(text_fields.values())
+    combined_text = combined_original.lower()
     spam_hits = sorted(term for term in SPAM_TERMS if term in combined_text)
     risk.append({"code": "spam_keywords", "label": "Spam and urgency phrases", "points": 0, "max_points": 0,
                  "triggered": bool(spam_hits), "reason": f"Matched: {', '.join(spam_hits)}." if spam_hits else "No common spam phrases found.",
@@ -82,7 +99,7 @@ def analyze_vendor(data, prior_submissions: list[dict]) -> dict:
                   for field, value in text_fields.items() if value and any(term in value.lower() for term in SPAM_TERMS)}
     risk_factor("spam_field_locations", "Spam phrases by submitted field", 0,
                 "; ".join(f"{field}: {', '.join(hits)}" for field, hits in field_hits.items()) if field_hits else
-                "No common spam phrases found in address, package, price, or offer fields.", bool(field_hits))
+                "No common spam phrases found in any submitted text or URL field.", bool(field_hits))
 
     verified_images = [image for image in data.images if image.get("image_verified")]
     hashes = [image.get("sha256") for image in verified_images if image.get("sha256")]
@@ -95,7 +112,9 @@ def analyze_vendor(data, prior_submissions: list[dict]) -> dict:
     risk_factor("duplicate_image", "Duplicate service image", 0,
                 "The same image content appears more than once or matches an earlier submission." if duplicate_images else
                 "No duplicate image content found in this or prior submissions.", duplicate_images)
-    letters = [c for c in combined_text if c.isalpha()]; caps_ratio = sum(c.isupper() for c in data.description) / max(1, len(letters)); emojis = len(EMOJI_RE.findall(combined_text))
+    letters = [c for c in combined_original if c.isalpha()]
+    caps_ratio = sum(c.isupper() for c in letters) / max(1, len(letters))
+    emojis = len(EMOJI_RE.findall(combined_original))
     noisy = (len(letters) >= 20 and caps_ratio > .35) or emojis > 5
     risk_factor("noisy_content", "Excessive caps or emojis", 1.5, f"Uppercase ratio {caps_ratio:.0%}; {emojis} emojis." if noisy else "Capitalization and emoji use are reasonable.", noisy)
 
@@ -119,15 +138,6 @@ def analyze_vendor(data, prior_submissions: list[dict]) -> dict:
                   "source": "deterministic_evidence", "scoring_weight": 0})
     domain_match = website_ok and domain not in {"gmail.com", "outlook.com", "yahoo.com", "hotmail.com"} and domain.removeprefix("www.") == urlparse(data.website).netloc.lower().removeprefix("www.")
     trust_factor("domain_match", "Business email matches website", 2.0, "Email and website domains match." if domain_match else "Domains do not match or email is consumer-hosted.", domain_match)
-    email_check = check_email(data.email) if data.email else {"findings": []}
-    disposable_email = "disposable_email_domain" in email_check["findings"]
-    risk_factor("disposable_email", "Disposable or temporary email domain", 0,
-                f"Email domain '{domain}' is a known disposable/temp-mail provider." if disposable_email else
-                "Email domain is not on the disposable-provider list.", disposable_email)
-    no_mx = "no_mx_record" in email_check["findings"]
-    risk_factor("email_no_mx", "Email domain has no mail server", 0,
-                f"Domain '{domain}' has no valid MX record; email may be unreachable." if no_mx else
-                "Email domain resolves a valid MX record.", no_mx)
     trust_factor("description_depth", "Detailed service description", 1.5, f"Description contains {word_count} words." if not too_short else "Description lacks operational detail.", not too_short)
     package_complete = bool(data.package_name and data.package_details and data.price_or_range)
     trust_factor("package_transparency", "Optional package transparency", 1.5, "Package, inclusions, and price/range supplied." if package_complete else "Optional package or pricing details were not supplied; this is neutral.", package_complete)
@@ -143,4 +153,10 @@ def analyze_vendor(data, prior_submissions: list[dict]) -> dict:
                 "Phone number is a repeated or sequential digit pattern (e.g. 9999999999)." if degenerate_phone else
                 "No repeated/sequential digit pattern detected in phone number.", degenerate_phone)
 
-    return {"mode": "evidence_only", "scoring_weight": 0, "risk_evidence": risk, "trust_evidence": trust}
+    result = {"mode": "evidence_only", "scoring_weight": 0, "risk_evidence": risk, "trust_evidence": trust}
+    log_event(logger, "deterministic_evidence_completed",
+              duration_ms=round((perf_counter() - started) * 1000, 1), checked_field_count=len(text_fields) + 1,
+              triggered_risk_count=sum(bool(item.get("triggered")) for item in risk),
+              earned_trust_count=sum(bool(item.get("earned")) for item in trust),
+              prior_submission_count=len(prior_submissions))
+    return result

@@ -92,7 +92,11 @@ Demo logins (change in `.env`): vendor `vendor@example.com` / `vendor-demo`; adm
 
 ## Scoring model
 
-Both risk and trust ledgers total 10 available points and are generated exclusively by the successful local AI model. Qwen is attempted first; Gemma is attempted only when Qwen fails or returns invalid structured output. If both fail, scores remain empty, the assessment is marked `ai_unavailable`, and admin approval is blocked. Deterministic content, URL, duplicate, and trust checks remain visible evidence with `scoring_weight: 0`.
+Both risk and trust ledgers total 10 available points and are generated exclusively by the successful local AI model. Qwen is attempted first; Gemma is attempted only when Qwen fails or returns invalid structured output. If both fail, scores remain empty, the assessment is marked `ai_unavailable`, and admin approval is blocked. On the next backend start, scoreless records are retried automatically after Ollama becomes available. Deterministic content, URL, duplicate, and trust checks remain visible evidence with `scoring_weight: 0`.
+
+### Optimization terminal logs
+
+The backend emits one-line JSON terminal events for startup, MongoDB initialization, upload storage, field-evidence checks, each Ollama attempt, fallback selection, image/document assessment, score persistence, recovery, and admin list reads. Metrics include `duration_ms`, model, fallback use, counts, status, scores, risk level, and confidence. Raw vendor values, identity numbers, document/image content, tokens, and complete model output are never logged. Set `LOG_LEVEL=INFO` (default) or `LOG_LEVEL=WARNING` in `backend/.env` before starting Uvicorn.
 
 This is advisory demo output. Do not use it as the sole basis for vendor approval or production enforcement.
 

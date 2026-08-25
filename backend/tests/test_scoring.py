@@ -2,8 +2,11 @@
 Purpose: Verifies deterministic checks remain useful evidence while contributing
 zero points and never producing final trust or risk scores.
 """
+import pytest
+
 from app.schemas import VendorInput
 from app.scoring import analyze_vendor
+from app.llm_scoring import build_scoring_payload
 
 # Builds a complete vendor fixture for evidence-only analysis.
 def vendor(**overrides):
@@ -47,3 +50,27 @@ def test_address_package_offer_and_images_are_checked():
     assert factors["spam_field_locations"]["triggered"]
     assert "address" in factors["spam_field_locations"]["reason"]
     assert factors["duplicate_image"]["triggered"]
+
+
+# Confirms common spam phrases are located even when hidden outside description fields.
+@pytest.mark.parametrize(("field", "value", "expected_location"), [
+    ("name", "ACT NOW Events", "vendor name"),
+    ("category", "Guaranteed Services", "category"),
+    ("business_registration", "BUY NOW REGISTRATION", "business registration"),
+    ("portfolio_link", "https://bit.ly/crypto-giveaway", "portfolio"),
+    ("social_links", ["https://tinyurl.com/login-verify"], "social link"),
+])
+def test_spam_detection_covers_non_description_fields(field, value, expected_location):
+    result = analyze_vendor(vendor(**{field: value}), [])
+    factors = {item["code"]: item for item in result["risk_evidence"]}
+    assert factors["spam_keywords"]["triggered"] or factors["suspicious_url"]["triggered"]
+    reasons = factors["spam_field_locations"]["reason"] + factors["suspicious_url"]["reason"]
+    assert expected_location in reasons.lower()
+
+
+# Confirms the AI request contains every VendorInput field without exclusions.
+def test_local_ai_payload_contains_every_vendor_field():
+    data = vendor(aadhaar_number="123456789012", gst_number="33ABCDE1234F1Z5", images=[{"sha256": "abc"}],
+                  file={"storage_name": "proof.pdf"})
+    payload = build_scoring_payload(data, {"mode": "evidence_only"})
+    assert set(payload["vendor"]) == set(VendorInput.model_fields)

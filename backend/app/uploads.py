@@ -4,18 +4,21 @@ document outside MongoDB while returning safe metadata for submission records.
 """
 
 import os
+import logging
 from pathlib import Path
 from hashlib import sha256
 import struct
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile
+from .logging_config import log_event
 
 UPLOAD_ROOT = Path(os.getenv("UPLOAD_DIR", Path(__file__).resolve().parents[1] / "uploads")).resolve()
 IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 FILE_TYPES = {"application/pdf": ".pdf", "application/msword": ".doc",
               "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx"}
 MAX_IMAGES, MAX_IMAGE_BYTES, MAX_FILE_BYTES = 5, 5 * 1024 * 1024, 10 * 1024 * 1024
+logger = logging.getLogger("vendor_trust.uploads")
 
 
 # Reads trusted dimensions from supported image headers and rejects mislabeled bytes.
@@ -74,6 +77,8 @@ async def store_upload(upload: UploadFile, allowed: dict[str, str], limit: int, 
     if target.parent != UPLOAD_ROOT:
         raise HTTPException(400, "Unsafe upload path")
     target.write_bytes(content)
+    log_event(logger, "upload_stored", kind=kind, content_type=upload.content_type,
+              size_bytes=len(content), image_verified=bool(image_details.get("image_verified")))
     return {"storage_name": storage_name, "original_name": Path(upload.filename or kind).name,
             "content_type": upload.content_type, "size": len(content), "kind": kind, "owner": owner,
             **image_details}
@@ -86,6 +91,8 @@ async def store_upload_batch(images: list[UploadFile], attachment: UploadFile | 
         raise HTTPException(413, f"A maximum of {MAX_IMAGES} service images is allowed")
     stored_images = [await store_upload(image, IMAGE_TYPES, MAX_IMAGE_BYTES, "image", owner) for image in images]
     stored_file = await store_upload(attachment, FILE_TYPES, MAX_FILE_BYTES, "file", owner) if attachment else None
+    log_event(logger, "upload_batch_stored", image_count=len(stored_images), attachment_present=bool(stored_file),
+              total_bytes=sum(item["size"] for item in stored_images) + (stored_file["size"] if stored_file else 0))
     return {"images": stored_images, "file": stored_file}
 
 

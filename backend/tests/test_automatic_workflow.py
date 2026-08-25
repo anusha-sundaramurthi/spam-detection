@@ -55,6 +55,19 @@ def test_score_explanation_records_reduction_reasons(monkeypatch):
     assert result["score_explanation"]["trust"]["reduction_reasons"] == ["Urgency language was detected."]
 
 
+# Confirms backend startup recovery retries only persisted submissions without scores.
+def test_missing_score_recovery_reassesses_scoreless_records(monkeypatch):
+    first, second = ObjectId(), ObjectId()
+    assessment_collection = Mock()
+    assessment_collection.distinct.return_value = [first, second]
+    reassessed = []
+    monkeypatch.setattr(main, "assessments", assessment_collection)
+    monkeypatch.setattr(main, "assess_stored_submission", reassessed.append)
+    main.recover_missing_scores()
+    assessment_collection.distinct.assert_called_once_with("submission_id", {"trust_score": None})
+    assert reassessed == [first, second]
+
+
 # Confirms structured false-positive feedback is appended and returned to admins.
 def test_admin_feedback_is_stored_as_audit_history(monkeypatch):
     target = ObjectId()

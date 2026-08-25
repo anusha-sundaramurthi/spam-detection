@@ -5,8 +5,11 @@ admin workflows, including automatic assessment, migration, and approval.
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import logging
+from threading import Thread
+from time import perf_counter
 from bson import ObjectId
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from pydantic import ValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -17,20 +20,48 @@ from .document_assessment import assess_submission_document  # NEW
 from .image_assessment import assess_submission_images
 from .intelligence import build_intelligence, campaign_metadata, find_similar_submissions
 from .llm_scoring import assess_with_local_llm, combine
+from .logging_config import configure_logging, log_event
 from .schemas import AdminDetail, AdminFeedbackInput, AdminSummary, LoginInput, VendorInput, VendorReceipt, VendorSubmission
 from .scoring import MANDATORY_SCORING_SERVICES, analyze_vendor
 from .seed import seed_if_empty
 from .uploads import resolve_upload, store_upload_batch
 
+configure_logging()
+logger = logging.getLogger("vendor_trust.api")
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    initialize_database(); seed_if_empty(); yield
+    started = perf_counter()
+    log_event(logger, "application_startup_started")
+    initialize_database()
+    seed_if_empty()
+    start_missing_score_recovery()
+    log_event(logger, "application_startup_completed", duration_ms=round((perf_counter() - started) * 1000, 1))
+    yield
+    log_event(logger, "application_shutdown_completed")
 
 
 app = FastAPI(title="onivah Demo API", version="3.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
 vendor_only, admin_only = require_role("vendor"), require_role("admin")
+
+
+# Measures every API request without logging request bodies, credentials, or query values.
+@app.middleware("http")
+async def log_request_performance(request: Request, call_next):
+    """Emit end-to-end route latency and status for terminal-based optimization."""
+    started = perf_counter()
+    try:
+        response = await call_next(request)
+        log_event(logger, "http_request_completed", method=request.method, path=request.url.path,
+                  status_code=response.status_code, duration_ms=round((perf_counter() - started) * 1000, 1))
+        return response
+    except Exception as exc:
+        log_event(logger, "http_request_failed", level=logging.ERROR, method=request.method,
+                  path=request.url.path, duration_ms=round((perf_counter() - started) * 1000, 1),
+                  error_type=type(exc).__name__)
+        raise
 
 
 def oid(value: str):
@@ -47,6 +78,9 @@ def serialize(row):
 
 def assessment_fields(payload: VendorInput, prior: list[dict]) -> dict:
     """Keep deterministic, AI, combined, and explainability outputs synchronized."""
+    started = perf_counter()
+    log_event(logger, "text_assessment_pipeline_started", field_count=len(VendorInput.model_fields),
+              prior_submission_count=len(prior))
     evidence = analyze_vendor(payload, prior); ai = assess_with_local_llm(payload, evidence); combined = combine(evidence, ai)
     intelligence = build_intelligence(payload, evidence, ai, combined)
     risk_reasons = [factor["reason"] for factor in ai.get("risk_factors", []) if factor.get("points", 0) > 0]
@@ -59,17 +93,27 @@ def assessment_fields(payload: VendorInput, prior: list[dict]) -> dict:
                   "reduction_reasons": risk_reasons or ([ai.get("summary")] if ai.get("summary") else []),
                   "explanation": "Trust is shown out of 10; points not awarded are displayed as the reduction from the maximum."},
     }
-    return {"assessment_version": "ai-image-v3", "assessment_status": "complete" if ai["status"] == "complete" else "ai_unavailable", "assessed_at": datetime.now(timezone.utc),
+    result = {"assessment_version": "ai-image-v3", "assessment_status": "complete" if ai["status"] == "complete" else "ai_unavailable", "assessed_at": datetime.now(timezone.utc),
         "rule_assessment": evidence, "risk_factors": ai.get("risk_factors", []), "trust_factors": ai.get("trust_factors", []),
         "mandatory_services": MANDATORY_SCORING_SERVICES, "ai_assessment": ai,
         "combined_assessment": combined, "score_explanation": score_explanation, "intelligence": intelligence, **combined}
+    log_event(logger, "text_assessment_pipeline_completed",
+              duration_ms=round((perf_counter() - started) * 1000, 1), status=result["assessment_status"],
+              model=ai.get("model"), fallback_used=ai.get("fallback_used", False),
+              trust_score=result.get("trust_score"), risk_score=result.get("risk_score"),
+              confidence=result.get("confidence"), risk_level=result.get("risk_level"))
+    return result
 
 
 # Reloads a newly stored MongoDB document and assesses only that authoritative record.
 def assess_stored_submission(submission_id: ObjectId) -> None:
     """Enforce the save-first, fetch-from-database, destructure, then assess workflow."""
+    started = perf_counter()
+    submission_ref = str(submission_id)
+    log_event(logger, "stored_submission_assessment_started", submission_id=submission_ref)
     row = submissions.find_one({"_id": submission_id})
     if not row:
+        log_event(logger, "stored_submission_not_found", level=logging.WARNING, submission_id=submission_ref)
         return
     media = list(upload_records.find({"submission_id": submission_id}))
     images = [{key: value for key, value in item.items() if key not in {"_id", "assessment"}}
@@ -79,6 +123,8 @@ def assess_stored_submission(submission_id: ObjectId) -> None:
     payload_data = {field: row.get(field) for field in VendorInput.model_fields}
     payload_data.update(images=images, file=attachment)
     payload = VendorInput(**payload_data)
+    log_event(logger, "stored_submission_loaded", submission_id=submission_ref,
+              field_count=len(payload_data), image_count=len(images), attachment_present=bool(attachment))
     prior = [{"id": str(item["_id"]), "email": item.get("email"), "phone": item.get("phone"),
               "description": item.get("description", ""), "images": item.get("images", [])}
              for item in submissions.find({"_id": {"$ne": submission_id}})]
@@ -127,6 +173,32 @@ def assess_stored_submission(submission_id: ObjectId) -> None:
     assessments.update_one({"submission_id": submission_id}, {"$set": assessment,
                            "$setOnInsert": {"submission_id": submission_id, "status": "pending", "created_at": now,
                                             "admin_feedback": []}}, upsert=True)
+    log_event(logger, "stored_submission_assessment_persisted", submission_id=submission_ref,
+              duration_ms=round((perf_counter() - started) * 1000, 1),
+              assessment_status=assessment.get("assessment_status"), trust_score=assessment.get("trust_score"),
+              risk_score=assessment.get("risk_score"), image_count=len(image_results),
+              document_assessed=bool(document_result))
+
+
+# Reassesses records whose earlier AI attempt could not produce numeric scores.
+def recover_missing_scores() -> None:
+    """Retry incomplete text scores after Ollama or its configured models become available."""
+    pending_ids = assessments.distinct("submission_id", {"trust_score": None})
+    log_event(logger, "missing_score_recovery_started", record_count=len(pending_ids))
+    for submission_id in pending_ids:
+        try:
+            assess_stored_submission(submission_id)
+        except Exception as exc:
+            log_event(logger, "missing_score_recovery_failed", level=logging.ERROR,
+                      submission_id=str(submission_id), error_type=type(exc).__name__)
+    log_event(logger, "missing_score_recovery_completed", record_count=len(pending_ids))
+
+
+# Starts recovery off the request thread so a slow local model never blocks API startup.
+def start_missing_score_recovery() -> None:
+    """Launch one daemon worker that retries scoreless persisted assessments."""
+    Thread(target=recover_missing_scores, name="assessment-recovery", daemon=True).start()
+    log_event(logger, "missing_score_recovery_worker_started")
 
 
 def migrate_one(row: dict) -> None:
@@ -191,6 +263,8 @@ async def vendor_submit(background_tasks: BackgroundTasks, payload_json: str = F
     form_data = payload.model_dump(exclude={"images", "file"})
     document = form_data | {"created_at": now, "updated_at": now, "vendor_id": user["sub"]}
     result = submissions.insert_one(document)
+    log_event(logger, "vendor_submission_stored", submission_id=str(result.inserted_id),
+              field_count=len(form_data), image_count=len(stored["images"]), attachment_present=bool(stored["file"]))
     assessments.insert_one({"submission_id": result.inserted_id, "status": "pending", "assessment_status": "pending",
                             "admin_feedback": [], "created_at": now, "updated_at": now})
     records = stored["images"] + ([stored["file"]] if stored["file"] else [])
@@ -198,6 +272,7 @@ async def vendor_submit(background_tasks: BackgroundTasks, payload_json: str = F
         upload_records.insert_many([record | {"linked": True, "submission_id": result.inserted_id,
                                                "created_at": now, "updated_at": now} for record in records])
     background_tasks.add_task(assess_stored_submission, result.inserted_id)
+    log_event(logger, "vendor_submission_assessment_queued", submission_id=str(result.inserted_id))
     return VendorReceipt(id=str(result.inserted_id), status="pending", created_at=now)
 
 
@@ -214,7 +289,9 @@ def vendor_submissions(user=Depends(vendor_only)):
 @app.get("/api/admin/submissions", response_model=list[AdminSummary])
 def admin_submissions(user=Depends(admin_only)):
     """Expose internal scores only through the administrator-protected collection view."""
-    return [serialize(enrich_admin(x)) for x in submissions.find().sort("created_at", -1)]
+    rows = [serialize(enrich_admin(x)) for x in submissions.find().sort("created_at", -1)]
+    log_event(logger, "admin_submission_list_returned", record_count=len(rows))
+    return rows
 
 
 @app.get("/api/admin/submissions/{submission_id}", response_model=AdminDetail)

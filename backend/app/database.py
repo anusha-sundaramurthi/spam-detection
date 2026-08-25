@@ -4,8 +4,11 @@ and upload records—plus their indexes and compatibility timestamps.
 """
 
 import os
+import logging
 from datetime import datetime, timezone
+from time import perf_counter
 from pymongo import ASCENDING, DESCENDING, MongoClient
+from .logging_config import log_event
 
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB = os.getenv("MONGODB_DB", "vendor_trust_demo")
@@ -15,11 +18,14 @@ database = client[MONGODB_DB]
 submissions = database["submissions"]
 assessments = database["assessments"]
 upload_records = database["upload_records"]
+logger = logging.getLogger("vendor_trust.database")
 
 
 # Verifies MongoDB, creates indexes, and safely upgrades legacy documents.
 def initialize_database() -> None:
     """Create non-destructive indexes within the dedicated demo database."""
+    started = perf_counter()
+    log_event(logger, "database_initialization_started", database=MONGODB_DB)
     client.admin.command("ping")
     submissions.create_index([("created_at", DESCENDING)])
     assessments.create_index([("submission_id", ASCENDING)], unique=True)
@@ -73,3 +79,5 @@ def initialize_database() -> None:
     non_raw_fields = assessment_fields | {"status", "approved_at", "approved_by", "email_normalized", "phone_normalized",
         "images", "file", "scoring_model", "fallback_used", "similar_count", "feedback_verdict"}
     submissions.update_many({}, {"$unset": {key: "" for key in non_raw_fields}})
+    log_event(logger, "database_initialization_completed", database=MONGODB_DB,
+              duration_ms=round((perf_counter() - started) * 1000, 1), collection_count=3)

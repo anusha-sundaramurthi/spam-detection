@@ -5,19 +5,23 @@ vision model and combines relevance/spam scores with deterministic duplicates.
 """
 
 import base64
+import logging
 import os
+from time import perf_counter
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from .llm_scoring import OLLAMA_LOCK
+from .logging_config import log_event
 from .uploads import resolve_upload
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "moondream:1.8b")
 VISION_BACKUP_MODEL = os.getenv("OLLAMA_VISION_BACKUP_MODEL", "moondream:1.8b")
 VISION_TIMEOUT = float(os.getenv("VISION_TIMEOUT_SECONDS", "1000"))
+logger = logging.getLogger("vendor_trust.vision")
 
 # Fields from the vendor form an image should be checked against — identity
 # fields too (name/email/phone/city), not just the service description, since
@@ -41,6 +45,8 @@ class VisionResult(BaseModel):
 # Calls and validates one configured vision model without applying fallback policy.
 def attempt_vision_model(encoded: str, prompt: str, model: str) -> tuple[dict | None, str | None]:
     """Return one valid image classification or a concise failure reason."""
+    started = perf_counter()
+    log_event(logger, "vision_model_attempt_started", model=model, timeout_seconds=VISION_TIMEOUT)
     try:
         with OLLAMA_LOCK:
             response = httpx.post(f"{OLLAMA_URL.rstrip('/')}/api/chat", timeout=VISION_TIMEOUT, json={
@@ -50,9 +56,14 @@ def attempt_vision_model(encoded: str, prompt: str, model: str) -> tuple[dict | 
             })
         response.raise_for_status()
         parsed = VisionResult.model_validate_json(response.json()["message"]["content"])
+        log_event(logger, "vision_model_attempt_completed", model=model,
+                  duration_ms=round((perf_counter() - started) * 1000, 1),
+                  relevance=parsed.relevance, spam_detected=parsed.spam_detected,
+                  trust_score=parsed.trust_score, risk_score=parsed.risk_score, confidence=parsed.confidence)
         return parsed.model_dump(), None
     except (OSError, httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError) as exc:
-        print(f"[VISION MODEL FAILURE] {model}: {type(exc).__name__}: {exc}")
+        log_event(logger, "vision_model_attempt_failed", level=logging.WARNING, model=model,
+                  duration_ms=round((perf_counter() - started) * 1000, 1), error_type=type(exc).__name__)
         return None, f"{model}: {type(exc).__name__}"
 
 
@@ -111,4 +122,8 @@ def assess_submission_images(images: list[dict], vendor_context: dict, prior_has
                         "integrity_verified": bool(image.get("image_verified")), "duplicate": duplicate,
                         "duplicate_reason": "Image content matches this or an earlier upload." if duplicate else "No matching image fingerprint found.",
                         **semantic})
+    log_event(logger, "image_batch_assessment_completed", image_count=len(results),
+              complete_count=sum(item.get("status") == "complete" for item in results),
+              spam_count=sum(item.get("spam_detected") is True for item in results),
+              duplicate_count=sum(bool(item.get("duplicate")) for item in results))
     return results

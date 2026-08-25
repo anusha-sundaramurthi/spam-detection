@@ -8,15 +8,18 @@ reading uses only the separately configured vision model.
 """
 
 import base64
+import logging
 import os
 import re
 from pathlib import Path
+from time import perf_counter
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from .llm_scoring import OLLAMA_LOCK
+from .logging_config import log_event
 from .uploads import resolve_upload
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -25,6 +28,7 @@ DOC_BACKUP_MODEL = os.getenv("OLLAMA_BACKUP_MODEL", "gemma3:1b")
 SCAN_MODEL = os.getenv("OLLAMA_VISION_MODEL", "moondream:1.8b")
 SCAN_BACKUP_MODEL = os.getenv("OLLAMA_VISION_BACKUP_MODEL", "moondream:1.8b")
 DOC_TIMEOUT = float(os.getenv("VISION_TIMEOUT_SECONDS", "1000"))
+logger = logging.getLogger("vendor_trust.document")
 
 AADHAAR_PATTERN = re.compile(r"\b(\d{4})\s?(\d{4})\s?(\d{4})\b")
 NAME_TOKEN_PATTERN = re.compile(r"[A-Za-z]+")
@@ -89,6 +93,8 @@ def find_aadhaar_in_text(text: str) -> str | None:
 
 # Calls one configured vision model to read a rendered page image, without fallback policy.
 def attempt_scan_read(encoded: str, prompt: str, model: str) -> tuple[str | None, str | None]:
+    started = perf_counter()
+    log_event(logger, "document_scan_model_started", model=model, timeout_seconds=DOC_TIMEOUT)
     try:
         with OLLAMA_LOCK:
             response = httpx.post(f"{OLLAMA_URL.rstrip('/')}/api/chat", timeout=DOC_TIMEOUT, json={
@@ -97,9 +103,13 @@ def attempt_scan_read(encoded: str, prompt: str, model: str) -> tuple[str | None
                 "messages": [{"role": "user", "content": prompt, "images": [encoded]}],
             })
         response.raise_for_status()
-        return response.json()["message"]["content"], None
+        text = response.json()["message"]["content"]
+        log_event(logger, "document_scan_model_completed", model=model,
+                  duration_ms=round((perf_counter() - started) * 1000, 1), extracted_characters=len(text))
+        return text, None
     except (httpx.HTTPError, KeyError) as exc:
-        print(f"[SCAN READ FAILURE] {model}: {type(exc).__name__}: {exc}")
+        log_event(logger, "document_scan_model_failed", level=logging.WARNING, model=model,
+                  duration_ms=round((perf_counter() - started) * 1000, 1), error_type=type(exc).__name__)
         return None, f"{model}: {type(exc).__name__}"
 
 
@@ -120,6 +130,8 @@ def describe_scanned_document(image_bytes: bytes, vendor_context: dict) -> dict:
 
 # Calls and validates one configured text-judgment model without applying fallback policy.
 def attempt_document_judgment(prompt: str, system_prompt: str, model: str) -> tuple[dict | None, str | None]:
+    started = perf_counter()
+    log_event(logger, "document_text_model_started", model=model, timeout_seconds=DOC_TIMEOUT)
     try:
         with OLLAMA_LOCK:
             response = httpx.post(f"{OLLAMA_URL.rstrip('/')}/api/chat", timeout=DOC_TIMEOUT, json={
@@ -129,9 +141,15 @@ def attempt_document_judgment(prompt: str, system_prompt: str, model: str) -> tu
         response.raise_for_status()
         raw = response.json()["message"]["content"].strip()
         parsed = DocumentResult.model_validate_json(raw)
-        return parsed.model_dump(), None
+        result = parsed.model_dump()
+        log_event(logger, "document_text_model_completed", model=model,
+                  duration_ms=round((perf_counter() - started) * 1000, 1), relevance=result["relevance"],
+                  spam_detected=result["spam_detected"], trust_score=result["trust_score"],
+                  risk_score=result["risk_score"], confidence=result["confidence"])
+        return result, None
     except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError) as exc:
-        print(f"[DOC JUDGMENT FAILURE] {model}: {type(exc).__name__}: {exc}")
+        log_event(logger, "document_text_model_failed", level=logging.WARNING, model=model,
+                  duration_ms=round((perf_counter() - started) * 1000, 1), error_type=type(exc).__name__)
         return None, f"{model}: {type(exc).__name__}"
 
 
@@ -176,7 +194,10 @@ def judge_document(text: str, vendor_context: dict, deterministic_evidence: dict
 def assess_submission_document(file_record: dict | None, vendor_context: dict, declared_aadhaar: str | None) -> dict | None:
     """Produce one persisted, auditable result for the vendor's supporting document."""
     if not file_record:
+        log_event(logger, "document_assessment_skipped", reason="no_attachment")
         return None
+    started = perf_counter()
+    log_event(logger, "document_assessment_started", content_type=file_record.get("content_type"))
     path = resolve_upload(file_record["storage_name"])
     text, page_image = extract_document_text(path, file_record["content_type"])
 
@@ -195,6 +216,8 @@ def assess_submission_document(file_record: dict | None, vendor_context: dict, d
     # nothing real behind it. Report honestly as unavailable instead.
     if not text.strip() and not page_image:
         declared_tokens = normalize_name_tokens(vendor_context.get("name"))
+        log_event(logger, "document_assessment_unavailable", level=logging.WARNING,
+                  duration_ms=round((perf_counter() - started) * 1000, 1), reason="no_extractable_text")
         return {
             "storage_name": file_record["storage_name"],
             "original_name": file_record["original_name"],
@@ -240,7 +263,7 @@ def assess_submission_document(file_record: dict | None, vendor_context: dict, d
     deterministic_evidence = {"aadhaar_verification": aadhaar_verification, "name_verification": name_verification}
     judgment = judge_document(text, vendor_context, deterministic_evidence)
 
-    return {
+    result = {
         "storage_name": file_record["storage_name"],
         "original_name": file_record["original_name"],
         "content_type": file_record["content_type"],
@@ -248,3 +271,10 @@ def assess_submission_document(file_record: dict | None, vendor_context: dict, d
         "name_verification": name_verification,
         **judgment,
     }
+    log_event(logger, "document_assessment_completed",
+              duration_ms=round((perf_counter() - started) * 1000, 1), status=result.get("status"),
+              model=result.get("model"), fallback_used=result.get("fallback_used", False),
+              extracted_characters=len(text), aadhaar_match=aadhaar_verification["match"],
+              name_match=name_verification["found_in_document"], trust_score=result.get("trust_score"),
+              risk_score=result.get("risk_score"))
+    return result
