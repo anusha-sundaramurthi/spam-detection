@@ -2,8 +2,6 @@
 Purpose: Defines all validated API request and response contracts while keeping
 vendor-facing responses deliberately free of private trust and spam scores.
 """
-import phonenumbers
-from phonenumbers import NumberParseException
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 import phonenumbers

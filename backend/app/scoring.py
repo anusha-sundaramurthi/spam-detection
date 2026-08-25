@@ -22,8 +22,8 @@ MANDATORY_SCORING_SERVICES = [
     {"code": "url_evidence", "name": "Zero-weight optional URL evidence", "required": True},
     {"code": "address_package_offer_evidence", "name": "Zero-weight address, package, and offer spam evidence", "required": True},
     {"code": "image_verification", "name": "Backend image integrity and duplicate evidence", "required": True},
-    {"code": "vision_ai", "name": "Local vision relevance and visual-spam assessment: qwen2.5vl:3b", "required": True},
-    {"code": "document_ai", "name": "Local document relevance and ID-verification assessment: qwen2.5vl:3b", "required": True},
+    {"code": "vision_ai", "name": "Local vision relevance and visual-spam assessment: moondream:1.8b", "required": True},
+    {"code": "document_ai", "name": "Document extraction plus Qwen/Gemma relevance assessment", "required": True},
 ]
 
 

@@ -1,8 +1,7 @@
 # image_assessment.py
 """
-Purpose: Assesses each stored service image with a real local Ollama vision model
-(Qwen2.5-VL primary, Moondream fallback) and combines semantic relevance/spam
-findings, a per-image trust/risk score, and deterministic duplicate checks.
+Purpose: Assesses each stored service image with the configured local Ollama
+vision model and combines relevance/spam scores with deterministic duplicates.
 """
 
 import base64
@@ -16,7 +15,7 @@ from .llm_scoring import OLLAMA_LOCK
 from .uploads import resolve_upload
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-VISION_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5vl:3b")
+VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "moondream:1.8b")
 VISION_BACKUP_MODEL = os.getenv("OLLAMA_VISION_BACKUP_MODEL", "moondream:1.8b")
 VISION_TIMEOUT = float(os.getenv("VISION_TIMEOUT_SECONDS", "1000"))
 
@@ -59,7 +58,7 @@ def attempt_vision_model(encoded: str, prompt: str, model: str) -> tuple[dict | 
 
 # Uses the configured vision model to inspect actual pixels for relevance, visual
 # spam, a short description, and a trust/risk score with an explicit reason.
-# Tries the primary (Qwen2.5-VL) first, falling back to Moondream only if it fails.
+# Tries each distinct configured vision model without ever using a text-only model.
 def assess_image_semantics(image: dict, vendor_context: dict) -> dict:
     """Return a validated visual classification or an explicit unavailable state."""
     try:

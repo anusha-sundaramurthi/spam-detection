@@ -92,6 +92,25 @@ def test_scanned_document_falls_back_to_vision_read(monkeypatch):
     assert result["aadhaar_verification"]["match"] is True
 
 
+# Confirms scanned documents use the dedicated vision model settings and do
+# not accidentally send images to the text-only document judgment models.
+def test_scanned_document_reader_uses_only_vision_models(monkeypatch):
+    monkeypatch.setattr(document_assessment, "SCAN_MODEL", "primary-vision-model")
+    monkeypatch.setattr(document_assessment, "SCAN_BACKUP_MODEL", "backup-vision-model")
+    attempted_models = []
+
+    def attempt(_encoded, _prompt, model):
+        attempted_models.append(model)
+        if model == "primary-vision-model":
+            return None, "primary unavailable"
+        return "Visible registration document text", None
+
+    monkeypatch.setattr(document_assessment, "attempt_scan_read", attempt)
+    result = document_assessment.describe_scanned_document(b"fake-image", {"name": "Acme Events"})
+    assert attempted_models == ["primary-vision-model", "backup-vision-model"]
+    assert result["status"] == "complete" and result["fallback_used"] is True
+
+
 # Confirms a legacy .doc file (no text extractor, no page image) is reported
 # as unavailable instead of being judged on empty text and returning a
 # fabricated-looking "complete" score.

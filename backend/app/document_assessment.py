@@ -3,8 +3,8 @@
 Purpose: Extracts text from a vendor's supporting document (PDF/DOC/DOCX), verifies
 any declared Aadhaar number and vendor name deterministically, and produces an AI
 relevance/trust/risk judgment for the document content against the vendor's
-submission. Uses Qwen2.5-VL as the primary model for both text judgment and
-scanned-page reading, with Moondream as a vision-capable fallback for both.
+submission. Extracted text uses the configured text models, while scanned-page
+reading uses only the separately configured vision model.
 """
 
 import base64
@@ -20,8 +20,10 @@ from .llm_scoring import OLLAMA_LOCK
 from .uploads import resolve_upload
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-DOC_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5vl:3b")
-DOC_BACKUP_MODEL = os.getenv("OLLAMA_VISION_BACKUP_MODEL", "moondream:1.8b")
+DOC_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
+DOC_BACKUP_MODEL = os.getenv("OLLAMA_BACKUP_MODEL", "gemma3:1b")
+SCAN_MODEL = os.getenv("OLLAMA_VISION_MODEL", "moondream:1.8b")
+SCAN_BACKUP_MODEL = os.getenv("OLLAMA_VISION_BACKUP_MODEL", "moondream:1.8b")
 DOC_TIMEOUT = float(os.getenv("VISION_TIMEOUT_SECONDS", "1000"))
 
 AADHAAR_PATTERN = re.compile(r"\b(\d{4})\s?(\d{4})\s?(\d{4})\b")
@@ -102,13 +104,13 @@ def attempt_scan_read(encoded: str, prompt: str, model: str) -> tuple[str | None
 
 
 # Runs the vision model against a rendered page image when direct text extraction failed.
-# Tries the primary (Qwen2.5-VL) first, falling back to Moondream only if it fails.
+# Tries only configured vision models for scanned-page reading.
 def describe_scanned_document(image_bytes: bytes, vendor_context: dict) -> dict:
     encoded = base64.b64encode(image_bytes).decode("ascii")
     prompt = ("Read this document image. Extract any visible identification numbers, name, and "
               "address if present, and summarize the document's stated purpose. Vendor context: " + str(vendor_context))
     failures = []
-    for index, model in enumerate(dict.fromkeys([DOC_MODEL, DOC_BACKUP_MODEL])):
+    for index, model in enumerate(dict.fromkeys([SCAN_MODEL, SCAN_BACKUP_MODEL])):
         text, failure = attempt_scan_read(encoded, prompt, model)
         if text is not None:
             return {"status": "complete", "model": model, "fallback_used": index > 0, "text": text}
@@ -134,7 +136,7 @@ def attempt_document_judgment(prompt: str, system_prompt: str, model: str) -> tu
 
 
 # Judges document relevance/spam/trust/risk via the text model, mirroring attempt_model's pattern.
-# Tries the primary (Qwen2.5-VL) first, falling back to Moondream only if it fails.
+# Tries the configured text scorer first, then its text fallback.
 def judge_document(text: str, vendor_context: dict, deterministic_evidence: dict) -> dict:
     """Return a validated document assessment or an explicit unavailable state."""
     system_prompt = (
