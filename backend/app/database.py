@@ -41,7 +41,7 @@ def initialize_database() -> None:
     # Copy embedded legacy assessment/workflow data before removing it from raw submissions.
     assessment_fields = {"assessment_version", "assessment_status", "assessed_at", "rule_assessment", "risk_factors",
                          "trust_factors", "mandatory_services", "ai_assessment", "combined_assessment", "intelligence",
-                         "trust_score", "risk_score", "confidence", "risk_level", "admin_feedback", "image_assessments",
+                         "trust_score", "risk_score", "spam_score", "confidence", "risk_level", "admin_feedback", "image_assessments",
                          "image_assessment_summary", "method", "scoring_model", "fallback_used"}
     assessment_fields.add("score_explanation")
     for row in submissions.find():

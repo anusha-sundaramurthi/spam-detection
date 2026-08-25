@@ -37,8 +37,8 @@ class AIResult(BaseModel):
     trust_score: float = Field(ge=0, le=10)
     risk_score: float = Field(ge=0, le=10)
     confidence: int = Field(ge=0, le=100)
-    risk_factors: list[AIFactor] = Field(min_length=1, max_length=2)
-    trust_factors: list[AIFactor] = Field(min_length=1, max_length=2)
+    risk_factors: list[AIFactor] = Field(max_length=2)
+    trust_factors: list[AIFactor] = Field(max_length=2)
     summary: str = Field(max_length=180)
 
 
@@ -68,6 +68,8 @@ empty list for that category instead of a zero-point placeholder. Never invent e
 # Rescales model factor points so the auditable ledger exactly matches its score.
 def normalize_factors(items: list[dict], target: float, kind: str) -> list[dict]:
     """Keep displayed factor arithmetic consistent even when model rounding differs."""
+    if target <= 0:
+        return []
     total = sum(item["points"] for item in items)
     if total <= 0:
         items = [{"label": f"Overall AI {kind} assessment", "reason": "No individual weighted factor was returned.", "points": target}]
@@ -83,6 +85,21 @@ def normalize_factors(items: list[dict], target: float, kind: str) -> list[dict]
     return normalized
 
 
+# Repairs the common local-model mistake of returning 0-100 values for 0-10 fields.
+def repair_score_scale(payload: dict) -> dict:
+    """Convert only out-of-range score and factor values to the required ten-point scale."""
+    for key in ("trust_score", "risk_score"):
+        value = payload.get(key)
+        if isinstance(value, (int, float)) and 10 < value <= 100:
+            payload[key] = value / 10
+    for key in ("trust_factors", "risk_factors"):
+        for factor in payload.get(key, []) if isinstance(payload.get(key), list) else []:
+            value = factor.get("points") if isinstance(factor, dict) else None
+            if isinstance(value, (int, float)) and 10 < value <= 100:
+                factor["points"] = value / 10
+    return payload
+
+
 # Calls and validates one configured Ollama model without applying fallback policy.
 def attempt_model(data, evidence: dict, model: str) -> tuple[dict | None, str | None]:
     """Return one valid model assessment or a concise failure reason."""
@@ -91,7 +108,7 @@ def attempt_model(data, evidence: dict, model: str) -> tuple[dict | None, str | 
         # FIX: only one Ollama call in flight at a time, app-wide.
         with OLLAMA_LOCK:
             response = httpx.post(f"{OLLAMA_URL.rstrip('/')}/api/chat", timeout=LLM_TIMEOUT,
-                json={"model": model, "stream": False, "format": AIResult.model_json_schema(),
+                json={"model": model, "stream": False, "format": AIResult.model_json_schema(), "think": False,
                       # FIX: was "500-600" (a subtraction -> -100). Observed real
                       # responses only ever use ~150-175 tokens for this schema.
                       # 350 gives a safe buffer above that without letting the
@@ -100,9 +117,10 @@ def attempt_model(data, evidence: dict, model: str) -> tuple[dict | None, str | 
                       "options": {"temperature": 0, "seed": 42, "num_predict": 350, "num_ctx": 4096},
                       "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]})
         response.raise_for_status(); raw = response.json()["message"]["content"].strip()
-        print(f"[RAW {model} OUTPUT]: {raw}")
+        # Avoid raw Unicode output: Windows console encoding failures previously marked valid AI calls unavailable.
+        print(f"[MODEL RESPONSE] {model}: {len(raw)} characters received")
         raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.I).strip()
-        parsed = AIResult.model_validate(json.loads(raw))
+        parsed = AIResult.model_validate(repair_score_scale(json.loads(raw)))
         # FIX: a weak local model can return a structurally-valid but degenerate
         # result — confidence 0 with every factor's points forced to 0, even
         # though it just listed real risk/trust factors in the same response.
@@ -151,9 +169,11 @@ def assess_with_local_llm(data, evidence: dict | None = None) -> dict[str, Any]:
 def combine(_evidence: dict, ai: dict) -> dict:
     """Use AI scores exclusively and leave scores empty when both models fail."""
     if ai["status"] != "complete":
-        return {"trust_score": None, "risk_score": None, "confidence": 0, "risk_level": "unavailable",
+        return {"trust_score": None, "risk_score": None, "spam_score": None, "confidence": 0, "risk_level": "unavailable",
                 "method": "ai_unavailable", "scoring_model": None}
     risk = round(ai["risk_score"], 1)
-    return {"trust_score": round(ai["trust_score"], 1), "risk_score": risk, "confidence": ai["confidence"],
+    spam = round(ai["spam_probability"] / 10, 1)
+    return {"trust_score": round(ai["trust_score"], 1), "risk_score": risk, "spam_score": spam,
+            "confidence": ai["confidence"],
             "risk_level": "high" if risk >= 6.5 else "medium" if risk >= 3 else "low",
             "method": "AI-only local scoring", "scoring_model": ai["model"]}

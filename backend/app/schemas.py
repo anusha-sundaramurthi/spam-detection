@@ -109,6 +109,7 @@ class AdminSummary(BaseModel):
     assessment_status: str
     trust_score: float | None = None
     risk_score: float | None = None
+    spam_score: float | None = None
     confidence: int | None = None
     risk_level: str | None = None
     scoring_model: str | None = None

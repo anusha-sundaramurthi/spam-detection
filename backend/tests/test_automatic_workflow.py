@@ -35,7 +35,7 @@ def test_vendor_submission_stores_then_queues_assessment_without_scores(monkeypa
     assert stored["email"] == "vendor@example.com"
     allowed = (set(VendorInput.model_fields) - {"images", "file"}) | {"vendor_id", "created_at", "updated_at"}
     assert set(stored) == allowed
-    assert not ({"status", "assessment_status", "risk_score", "trust_score", "admin_feedback"} & set(stored))
+    assert not ({"status", "assessment_status", "risk_score", "trust_score", "spam_score", "admin_feedback"} & set(stored))
     assert stored["created_at"] == stored["updated_at"] and len(tasks.tasks) == 1
     pending = assessment_collection.insert_one.call_args.args[0]
     assert pending["status"] == "pending" and pending["assessment_status"] == "pending"
@@ -47,12 +47,24 @@ def test_score_explanation_records_reduction_reasons(monkeypatch):
     payload = VendorInput(name="Acme", phone="9876543210", address_line1="10 Market Road", address_line2="Suite 2",
         city="Chennai", state="Tamil Nadu", country="India", pincode="600001", service_title="Event photography",
         description="Wedding photography with consultation, full-day coverage, editing, and a private client gallery.", category="Photography")
-    monkeypatch.setattr(main, "assess_with_local_llm", lambda *_args: {"status":"complete","model":"test","primary_model":"test","backup_model":"backup","fallback_used":False,"attempted_models":["test"],"risk_score":3.0,"trust_score":6.0,"confidence":80,
+    monkeypatch.setattr(main, "assess_with_local_llm", lambda *_args: {"status":"complete","model":"test","primary_model":"test","backup_model":"backup","fallback_used":False,"attempted_models":["test"],"spam_probability":30,"risk_score":3.0,"trust_score":6.0,"confidence":80,
         "risk_factors":[{"code":"ai_risk_1","label":"Urgency","reason":"Urgency language was detected.","points":3,"max_points":10,"triggered":True}],"trust_factors":[{"code":"ai_trust_1","label":"Details","reason":"Clear deliverables were supplied.","points":6,"max_points":10,"earned":True}],"summary":"Some promotional risk."})
     result = main.assessment_fields(payload, [])
     assert result["score_explanation"]["risk"]["points_added"] == 3.0
     assert result["score_explanation"]["trust"]["points_reduced"] == 4.0
+    assert result["spam_score"] == 3.0
     assert result["score_explanation"]["trust"]["reduction_reasons"] == ["Urgency language was detected."]
+
+
+# Confirms startup recovery retries persisted records that have no AI score.
+def test_missing_score_recovery_reassesses_records(monkeypatch):
+    first, second = ObjectId(), ObjectId()
+    collection = Mock(); collection.distinct.return_value = [first, second]
+    retried = []
+    monkeypatch.setattr(main, "assessments", collection)
+    monkeypatch.setattr(main, "assess_stored_submission", retried.append)
+    main.recover_missing_scores()
+    assert retried == [first, second]
 
 
 # Confirms structured false-positive feedback is appended and returned to admins.

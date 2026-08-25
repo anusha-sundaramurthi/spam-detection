@@ -5,6 +5,7 @@ admin workflows, including automatic assessment, migration, and approval.
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from threading import Thread
 from bson import ObjectId
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import ValidationError
@@ -25,7 +26,7 @@ from .uploads import resolve_upload, store_upload_batch
 # Initializes MongoDB and demo data when the API starts.
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    initialize_database(); seed_if_empty(); yield
+    initialize_database(); seed_if_empty(); start_missing_score_recovery(); yield
 
 
 app = FastAPI(title="onivah Demo API", version="3.0.0", lifespan=lifespan)
@@ -55,6 +56,9 @@ def assessment_fields(payload: VendorInput, prior: list[dict]) -> dict:
     risk_reasons = [factor["reason"] for factor in ai.get("risk_factors", []) if factor.get("points", 0) > 0]
     trust_reduction = round(10 - (combined.get("trust_score") or 0), 1) if ai["status"] == "complete" else None
     score_explanation = {
+        "spam": {"source_probability": ai.get("spam_probability"), "calculation": "spam_probability / 10",
+                 "final_score": combined.get("spam_score"), "reasons": risk_reasons,
+                 "explanation": "Spam Score is the local model's spam probability converted from 0-100 to 0-10."},
         "risk": {"starting_score": 0, "points_added": combined.get("risk_score"), "final_score": combined.get("risk_score"),
                  "reasons": risk_reasons, "explanation": "Risk begins at 0; the model adds points only for identified spam-risk evidence."},
         "trust": {"starting_score": 10, "points_awarded": combined.get("trust_score"), "points_reduced": trust_reduction,
@@ -122,6 +126,22 @@ def assess_stored_submission(submission_id: ObjectId) -> None:
     assessments.update_one({"submission_id": submission_id}, {"$set": assessment,
                            "$setOnInsert": {"submission_id": submission_id, "status": "pending", "created_at": now,
                                             "admin_feedback": []}}, upsert=True)
+
+
+# Retries persisted submissions whose earlier local-model call produced no score.
+def recover_missing_scores() -> None:
+    """Reassess scoreless records after Ollama and its configured models become available."""
+    for submission_id in assessments.distinct("submission_id", {"$or": [{"trust_score": None}, {"spam_score": None}]}):
+        try:
+            assess_stored_submission(submission_id)
+        except Exception as exc:
+            print(f"[ASSESSMENT RECOVERY FAILURE] {submission_id}: {type(exc).__name__}")
+
+
+# Starts missing-score recovery without delaying FastAPI startup on a slow CPU model.
+def start_missing_score_recovery() -> None:
+    """Launch one daemon worker for previously unavailable assessments."""
+    Thread(target=recover_missing_scores, name="assessment-recovery", daemon=True).start()
 
 
 # Re-scores exactly one stale/legacy record. Used only by the migration endpoint below,
