@@ -65,8 +65,12 @@ def extract_document_text(path: Path, content_type: str) -> tuple[str, bytes | N
         text = "\n".join(page.get_text() for page in doc)
         image_bytes = None
         if len(text.strip()) < 20:  # likely scanned; render first page for vision model
-            pix = doc[0].get_pixmap(dpi=200)
-            image_bytes = pix.tobytes("png")
+            # FIX: 200 dpi on a normal A4 page renders ~1650x2340px, which
+            # alone can exceed qwen2.5vl's context in vision tokens. 120 dpi
+            # (~990x1400) is still plenty readable for OCR-style extraction
+            # and cuts vision tokens (and CPU inference time) substantially.
+            pix = doc[0].get_pixmap(dpi=120)
+            image_bytes = pix.tobytes("jpg")
         doc.close()
         return text, image_bytes
     if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
@@ -91,7 +95,7 @@ def attempt_scan_read(encoded: str, prompt: str, model: str) -> tuple[str | None
         with OLLAMA_LOCK:
             response = httpx.post(f"{OLLAMA_URL.rstrip('/')}/api/chat", timeout=DOC_TIMEOUT, json={
                 "model": model, "stream": False,
-                "options": {"temperature": 0, "num_predict": 300},
+                "options": {"temperature": 0, "num_predict": 300, "num_ctx": 4096},
                 "messages": [{"role": "user", "content": prompt, "images": [encoded]}],
             })
         response.raise_for_status()
@@ -127,6 +131,12 @@ def attempt_document_judgment(prompt: str, system_prompt: str, model: str) -> tu
         response.raise_for_status()
         raw = response.json()["message"]["content"].strip()
         parsed = DocumentResult.model_validate_json(raw)
+        # FIX: same degenerate-zero-confidence guard as llm_scoring.py and
+        # image_assessment.py — a weak/degraded model can return a valid
+        # confidence=0 result; treat that as a failed attempt so the backup
+        # model gets tried instead of accepting an unreliable "Complete".
+        if parsed.confidence == 0:
+            raise ValueError("degenerate zero-confidence result")
         return parsed.model_dump(), None
     except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError) as exc:
         print(f"[DOC JUDGMENT FAILURE] {model}: {type(exc).__name__}: {exc}")
@@ -153,7 +163,10 @@ def judge_document(text: str, vendor_context: dict, deterministic_evidence: dict
         "relevance_reason, spam_reason, score_reason.")
     prompt = ("Vendor context: " + str(vendor_context) +
               "\nDeterministic evidence (zero scoring weight, judge independently): " + str(deterministic_evidence) +
-              "\nDocument text:\n" + text[:4000])
+              # FIX: shortened from 4000 to 2500 chars (~700-900 tokens) so the
+              # prompt + system prompt reliably fits inside num_ctx=4096
+              # instead of crowding it, especially for OCR'd scanned text.
+              "\nDocument text:\n" + text[:2500])
 
     failures = []
     for index, model in enumerate(dict.fromkeys([DOC_MODEL, DOC_BACKUP_MODEL])):

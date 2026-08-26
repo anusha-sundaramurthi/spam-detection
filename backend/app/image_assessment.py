@@ -9,6 +9,7 @@ import base64
 import os
 from typing import Literal
 
+import fitz  # PyMuPDF -- already a dependency, reused here to downscale images
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
@@ -18,6 +19,34 @@ from .uploads import resolve_upload
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 VISION_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5vl:3b")
 VISION_BACKUP_MODEL = os.getenv("OLLAMA_VISION_BACKUP_MODEL", "moondream:1.8b")
+
+# FIX: vision token count scales with pixel count. A full-resolution phone
+# photo (e.g. 3000x4000) can push qwen2.5vl's request over its context size
+# on its own -- that's what caused the 400 "exceeds context size" failures
+# and the fallback to the weaker moondream model. Downscaling to a max
+# dimension before sending cuts tokens and CPU inference time drastically
+# with no real loss for a "what's in this image" classification task.
+MAX_IMAGE_DIMENSION = 768
+
+
+# Downscales raster image bytes so neither side exceeds MAX_IMAGE_DIMENSION.
+# Uses PyMuPDF (already a dependency) rather than adding Pillow.
+def downscale_image(image_bytes: bytes) -> bytes:
+    try:
+        doc = fitz.open(stream=image_bytes, filetype="img")
+        page = doc[0]
+        longest_side = max(page.rect.width, page.rect.height)
+        if longest_side <= MAX_IMAGE_DIMENSION:
+            doc.close()
+            return image_bytes
+        scale = MAX_IMAGE_DIMENSION / longest_side
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
+        resized = pix.tobytes("jpg")
+        doc.close()
+        return resized
+    except Exception as exc:  # noqa: BLE001 -- best-effort; fall back to original bytes
+        print(f"[IMAGE DOWNSCALE FAILURE] {type(exc).__name__}: {exc}")
+        return image_bytes
 VISION_TIMEOUT = float(os.getenv("VISION_TIMEOUT_SECONDS", "1000"))
 
 # Fields from the vendor form an image should be checked against — identity
@@ -46,11 +75,17 @@ def attempt_vision_model(encoded: str, prompt: str, model: str) -> tuple[dict | 
         with OLLAMA_LOCK:
             response = httpx.post(f"{OLLAMA_URL.rstrip('/')}/api/chat", timeout=VISION_TIMEOUT, json={
                 "model": model, "stream": False, "format": VisionResult.model_json_schema(),
-                "options": {"temperature": 0, "num_predict": 260},
+                "options": {"temperature": 0, "num_predict": 260, "num_ctx": 4096},
                 "messages": [{"role": "user", "content": prompt, "images": [encoded]}],
             })
         response.raise_for_status()
         parsed = VisionResult.model_validate_json(response.json()["message"]["content"])
+        # FIX: a degraded local vision model can return a structurally valid
+        # but degenerate confidence=0 result. Treat it as a failed attempt so
+        # the pipeline retries with the next model instead of silently
+        # accepting an unreliable score as "Complete".
+        if parsed.confidence == 0:
+            raise ValueError("degenerate zero-confidence result")
         return parsed.model_dump(), None
     except (OSError, httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError) as exc:
         print(f"[VISION MODEL FAILURE] {model}: {type(exc).__name__}: {exc}")
@@ -63,7 +98,8 @@ def attempt_vision_model(encoded: str, prompt: str, model: str) -> tuple[dict | 
 def assess_image_semantics(image: dict, vendor_context: dict) -> dict:
     """Return a validated visual classification or an explicit unavailable state."""
     try:
-        encoded = base64.b64encode(resolve_upload(image["storage_name"]).read_bytes()).decode("ascii")
+        raw_bytes = resolve_upload(image["storage_name"]).read_bytes()
+        encoded = base64.b64encode(downscale_image(raw_bytes)).decode("ascii")
     except OSError as exc:
         return {"status": "unavailable", "model": None, "relevance": "unavailable", "spam_detected": None,
                 "trust_score": None, "risk_score": None, "confidence": 0, "detected_content": "Not assessed",
