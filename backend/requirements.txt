@@ -1,12 +1,12 @@
-# Purpose: Pins the Python runtime dependencies required by the FastAPI backend and tests.
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
-pydantic[email]==2.11.7
-pymongo==4.14.0
-pytest==8.4.1
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pymongo==4.10.1
 httpx==0.28.1
+PyMuPDF==1.25.1
+python-docx==1.1.2
+phonenumbers==8.13.52
+dnspython==2.7.0
 python-multipart==0.0.20
-phonenumbers
-dnspython
-pymupdf
-python-docx
+pytest==8.4.1
+pytest-asyncio==0.25.0

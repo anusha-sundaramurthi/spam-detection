@@ -13,6 +13,11 @@ SPAM_PHRASES = ["guaranteed", "instant profit", "risk free", "act now", "limited
 EMOJI_PATTERN = re.compile("[\U0001F300-\U0001FAFF\U00002600-\U000027BF]")
 
 def check_phone(number: str, region: str = "IN") -> dict:
+    # FIX: guard against None (not just "") so this is safe regardless of
+    # whether the caller pre-checks the field. Previously phonenumbers.parse(None, ...)
+    # raised TypeError, which isn't caught by the NumberParseException handler below
+    # and crashed the caller.
+    number = number or ""
     findings = []
     try:
         parsed = phonenumbers.parse(number, region)
@@ -23,11 +28,21 @@ def check_phone(number: str, region: str = "IN") -> dict:
         findings.append("unparseable_phone_format")
         valid = False
     digits = ''.join(filter(str.isdigit, number))
-    if len(set(digits)) <= 2:
+    # FIX: an empty/missing phone number produces digits == "", and
+    # len(set("")) == 0 <= 2 was true, so a blank phone was incorrectly
+    # flagged as a "repeated/sequential digit pattern" alongside the
+    # (correct) invalid-format finding. Require at least one digit before
+    # judging repetition, so a missing number is reported as missing, not
+    # as a degenerate pattern.
+    if digits and len(set(digits)) <= 2:
         findings.append("degenerate_digit_pattern")
     return {"valid_format": valid, "findings": findings}
 
 def check_email(email: str) -> dict:
+    # FIX: guard against None so a caller that doesn't pre-check the field
+    # (e.g. build_evidence below) can't crash this with an AttributeError
+    # on email.split(...).
+    email = email or ""
     domain = email.split("@")[-1].lower()
     findings = []
     if domain in DISPOSABLE_DOMAINS:
@@ -39,6 +54,9 @@ def check_email(email: str) -> dict:
     return {"domain": domain, "findings": findings}
 
 def check_description(text: str) -> dict:
+    # FIX: guard against None so a caller that doesn't pre-check the field
+    # can't crash this with an AttributeError on text.lower().
+    text = text or ""
     findings = []
     lower = text.lower()
     hits = [p for p in SPAM_PHRASES if p in lower]
@@ -56,10 +74,15 @@ def check_description(text: str) -> dict:
 def build_evidence(data) -> dict:
     """Bundle deterministic checks into the evidence dict ai_scoring.py expects."""
     vendor = data.model_dump()
+    # FIX: vendor.get("phone", "") only falls back to "" when the key is
+    # absent; a field explicitly stored as None still passed None straight
+    # into check_phone/check_email/check_description. The functions above
+    # are now individually hardened against None too, but guarding here as
+    # well keeps this call site explicit and safe even if that changes later.
     return {
-        "phone": check_phone(vendor.get("phone", ""), vendor.get("country", "IN")),
-        "email": check_email(vendor.get("email", "")),
-        "description": check_description(vendor.get("description", "")),
+        "phone": check_phone(vendor.get("phone") or "", vendor.get("country") or "IN"),
+        "email": check_email(vendor.get("email") or ""),
+        "description": check_description(vendor.get("description") or ""),
     }
 
 def rule_based_fallback_score(evidence: dict) -> dict:

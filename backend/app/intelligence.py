@@ -47,14 +47,20 @@ def build_intelligence(data, evidence_only: dict, ai: dict, combined: dict) -> d
 def find_similar_submissions(row: dict, candidates: list[dict]) -> list[dict]:
     """Return explainable similarity matches without exposing them to vendors."""
     current = normalize(" ".join([row.get("service_title") or "", row.get("description") or "", row.get("package_details") or ""]))
-    current_phone = re.sub(r"\D", "", row.get("phone", ""))
+    # FIX: row.get("phone", "") only falls back to "" when the "phone" key is
+    # absent entirely. A document where "phone" exists but is stored as None
+    # (e.g. never set) still returns None here, and re.sub(pattern, "", None)
+    # raises TypeError, crashing the whole similarity scan for every submission
+    # after it. `row.get("phone") or ""` covers both the missing-key and
+    # present-but-None cases.
+    current_phone = re.sub(r"\D", "", row.get("phone") or "")
     matches = []
     for other in candidates:
         if other.get("_id") == row.get("_id"):
             continue
         other_text = normalize(" ".join([other.get("service_title") or "", other.get("description") or "", other.get("package_details") or ""]))
         text_similarity = SequenceMatcher(None, current, other_text).ratio() if current and other_text else 0
-        same_phone = bool(current_phone and current_phone == re.sub(r"\D", "", other.get("phone", "")))
+        same_phone = bool(current_phone and current_phone == re.sub(r"\D", "", other.get("phone") or ""))
         same_website = bool(row.get("website") and row.get("website") == other.get("website"))
         similarity = max(text_similarity, .9 if same_phone else 0, .85 if same_website else 0)
         if similarity >= .78:
