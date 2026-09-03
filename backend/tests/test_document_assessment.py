@@ -95,8 +95,8 @@ def test_scanned_document_falls_back_to_vision_read(monkeypatch):
 # Confirms scanned documents use the dedicated vision model settings and do
 # not accidentally send images to the text-only document judgment models.
 def test_scanned_document_reader_uses_only_vision_models(monkeypatch):
-    monkeypatch.setattr(document_assessment, "SCAN_MODEL", "primary-vision-model")
-    monkeypatch.setattr(document_assessment, "SCAN_BACKUP_MODEL", "backup-vision-model")
+    monkeypatch.setattr(document_assessment, "DOC_VISION_MODEL", "primary-vision-model")
+    monkeypatch.setattr(document_assessment, "DOC_VISION_BACKUP_MODEL", "backup-vision-model")
     attempted_models = []
 
     def attempt(_encoded, _prompt, model):
@@ -130,8 +130,8 @@ def test_doc_with_no_extractable_text_is_unavailable_not_fabricated(monkeypatch)
 # Confirms judge_document automatically retries with the backup model when the
 # primary model fails, mirroring the vision assessment fallback pattern.
 def test_judge_document_falls_back_to_backup_model(monkeypatch):
-    monkeypatch.setattr(document_assessment, "DOC_MODEL", "primary-doc-model")
-    monkeypatch.setattr(document_assessment, "DOC_BACKUP_MODEL", "backup-doc-model")
+    monkeypatch.setattr(document_assessment, "DOC_TEXT_MODEL", "primary-doc-model")
+    monkeypatch.setattr(document_assessment, "DOC_TEXT_BACKUP_MODEL", "backup-doc-model")
     def attempt(_prompt, _system_prompt, model):
         if model == "primary-doc-model":
             return None, "primary-doc-model: TimeoutError"
@@ -149,8 +149,8 @@ def test_judge_document_falls_back_to_backup_model(monkeypatch):
 # Confirms both models failing is reported explicitly rather than defaulting
 # to a misleading "complete" or zero score.
 def test_judge_document_both_models_failing_is_explicit(monkeypatch):
-    monkeypatch.setattr(document_assessment, "DOC_MODEL", "primary-doc-model")
-    monkeypatch.setattr(document_assessment, "DOC_BACKUP_MODEL", "backup-doc-model")
+    monkeypatch.setattr(document_assessment, "DOC_TEXT_MODEL", "primary-doc-model")
+    monkeypatch.setattr(document_assessment, "DOC_TEXT_BACKUP_MODEL", "backup-doc-model")
     monkeypatch.setattr(document_assessment, "attempt_document_judgment",
         lambda _prompt, _system_prompt, model: (None, f"{model}: HTTPError"))
     result = document_assessment.judge_document("some document text", {"name": "Acme"}, {})
