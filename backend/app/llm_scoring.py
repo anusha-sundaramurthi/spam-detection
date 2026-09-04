@@ -109,7 +109,6 @@ def attempt_model(data, evidence: dict, model: str) -> tuple[dict | None, str | 
         with OLLAMA_LOCK:
             response = httpx.post(f"{OLLAMA_URL.rstrip('/')}/api/chat", timeout=LLM_TIMEOUT,
                 json={"model": model, "stream": False, "format": AIResult.model_json_schema(), "think": False,
-<<<<<<< HEAD
                       # FIX: was "500-600" (a subtraction -> -100). Observed real
                       # responses only ever use ~150-175 tokens for this schema.
                       # 350 gives a safe buffer above that without letting the
@@ -117,10 +116,6 @@ def attempt_model(data, evidence: dict, model: str) -> tuple[dict | None, str | 
                       # which generates at roughly 3 tokens/sec.
                       "options": {"temperature": 0, "seed": 42, "num_predict": 350, "num_ctx": 4096},
                       "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]})
-=======
-                     "options": {"temperature": 0, "seed": 42, "num_predict": 350, "num_ctx": 4096},
-                     "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]})
->>>>>>> development
         response.raise_for_status(); raw = response.json()["message"]["content"].strip()
         # Avoid raw Unicode output: Windows console encoding failures previously marked valid AI calls unavailable.
         print(f"[MODEL RESPONSE] {model}: {len(raw)} characters received")
