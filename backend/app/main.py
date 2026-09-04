@@ -133,7 +133,6 @@ def assess_stored_submission(submission_id: ObjectId) -> None:
                                             "admin_feedback": []}}, upsert=True)
 
 
-<<<<<<< HEAD
 # Retries persisted submissions whose earlier local-model call produced no score.
 def recover_missing_scores() -> None:
     """Reassess scoreless records after Ollama and its configured models become available."""
@@ -152,8 +151,6 @@ def start_missing_score_recovery() -> None:
 
 # Re-scores exactly one stale/legacy record. Used only by the migration endpoint below,
 # never by a GET read path.
-=======
->>>>>>> development
 def migrate_one(row: dict) -> None:
     """Upgrade a single legacy record to the current assessment version."""
     assess_stored_submission(row["_id"])
