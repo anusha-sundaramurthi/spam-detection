@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 
 from .auth import login, require_role
 from .database import assessments, initialize_database, submissions, upload_records
+from .document_assessment import assess_submission_document  # NEW
 from .image_assessment import assess_submission_images
 from .intelligence import build_intelligence, campaign_metadata, find_similar_submissions
 from .llm_scoring import assess_with_local_llm, combine
@@ -23,7 +24,6 @@ from .seed import seed_if_empty
 from .uploads import resolve_upload, store_upload_batch
 
 
-# Initializes MongoDB and demo data when the API starts.
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database(); seed_if_empty(); start_missing_score_recovery(); yield
@@ -34,13 +34,11 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allo
 vendor_only, admin_only = require_role("vendor"), require_role("admin")
 
 
-# Validates and converts a URL identifier into a MongoDB ObjectId.
 def oid(value: str):
     if not ObjectId.is_valid(value): raise HTTPException(404, "Submission not found")
     return ObjectId(value)
 
 
-# Removes internal MongoDB fields and serializes ObjectId values for JSON.
 def serialize(row):
     """Convert MongoDB-specific fields into safe JSON values at the API boundary."""
     result = dict(row); result["id"] = str(result.pop("_id"))
@@ -48,7 +46,6 @@ def serialize(row):
     return result
 
 
-# Runs the complete automatic assessment and packages all stored admin evidence.
 def assessment_fields(payload: VendorInput, prior: list[dict]) -> dict:
     """Keep deterministic, AI, combined, and explainability outputs synchronized."""
     evidence = analyze_vendor(payload, prior); ai = assess_with_local_llm(payload, evidence); combined = combine(evidence, ai)
@@ -72,22 +69,6 @@ def assessment_fields(payload: VendorInput, prior: list[dict]) -> dict:
         "combined_assessment": combined, "score_explanation": score_explanation, "intelligence": intelligence, **combined}
 
 
-# ---------------------------------------------------------------------------
-# IMPORTANT FIX: scoring must never run inside a GET/read path.
-#
-# The old ensure_current_assessment() used to be called from every
-# admin_submissions()/admin_detail() GET request, which silently re-ran the
-# local LLM for any "stale" row on every single page load or refresh. With
-# several stale rows in the collection, one GET request could trigger many
-# sequential (or overlapping, if multiple GETs land close together) Ollama
-# calls, producing exactly the ReadTimeout pile-up seen in the logs.
-#
-# Scoring is now only triggered by:
-#   1. A new vendor submission (background task, one submission at a time).
-#   2. An explicit admin-triggered migration endpoint (below), so it happens
-#      once, on purpose, not implicitly on every read.
-# ---------------------------------------------------------------------------
-
 # Reloads a newly stored MongoDB document and assesses only that authoritative record.
 def assess_stored_submission(submission_id: ObjectId) -> None:
     """Enforce the save-first, fetch-from-database, destructure, then assess workflow."""
@@ -106,15 +87,30 @@ def assess_stored_submission(submission_id: ObjectId) -> None:
               "description": item.get("description", ""), "images": item.get("images", [])}
              for item in submissions.find({"_id": {"$ne": submission_id}})]
     prior_hashes = {item.get("sha256") for item in upload_records.find({"submission_id": {"$ne": submission_id}, "kind": "image"}) if item.get("sha256")}
+
     image_results = assess_submission_images(images, payload.model_dump(), prior_hashes)
+    # NEW: run document detection (text extraction, Aadhaar/name verification,
+    # AI relevance + trust/risk judgment). Previously this module was never called.
+    document_result = assess_submission_document(attachment, payload.model_dump(), payload.aadhaar_number)
+
     now = datetime.now(timezone.utc)
     for result in image_results:
         upload_records.update_one({"submission_id": submission_id, "storage_name": result["storage_name"]},
                                   {"$set": {"assessment": result, "updated_at": now}})
+    if document_result:
+        upload_records.update_one({"submission_id": submission_id, "storage_name": document_result["storage_name"]},
+                                  {"$set": {"assessment": document_result, "updated_at": now}})
+
     assessment = assessment_fields(payload, prior)
     complete_images = sum(item["status"] == "complete" for item in image_results)
-    if image_results and complete_images != len(image_results) and assessment["assessment_status"] == "complete":
-        assessment["assessment_status"] = "image_ai_unavailable"
+    failed_components = []
+    if image_results and complete_images != len(image_results):
+        failed_components.append("image")
+    if document_result and document_result["status"] != "complete":
+        failed_components.append("document")
+    if failed_components and assessment["assessment_status"] == "complete":
+        assessment["assessment_status"] = "_".join(failed_components) + "_ai_unavailable"
+
     assessment.update(image_assessments=image_results, image_assessment_summary={
         "total": len(image_results), "complete": complete_images,
         "unavailable": len(image_results) - complete_images,
@@ -122,12 +118,22 @@ def assess_stored_submission(submission_id: ObjectId) -> None:
         "irrelevant": sum(item.get("relevance") == "irrelevant" for item in image_results),
         "duplicates": sum(bool(item.get("duplicate")) for item in image_results),
         "spam": sum(item.get("spam_detected") is True for item in image_results),
-    }, updated_at=now)
+    }, document_assessment=document_result, document_assessment_summary=({
+        "status": document_result["status"],
+        "relevance": document_result.get("relevance"),
+        "spam_detected": document_result.get("spam_detected"),
+        "trust_score": document_result.get("trust_score"),
+        "risk_score": document_result.get("risk_score"),
+        "aadhaar_match": document_result.get("aadhaar_verification", {}).get("match"),
+        "name_match": document_result.get("name_verification", {}).get("found_in_document"),
+    } if document_result else None), updated_at=now)
+
     assessments.update_one({"submission_id": submission_id}, {"$set": assessment,
                            "$setOnInsert": {"submission_id": submission_id, "status": "pending", "created_at": now,
                                             "admin_feedback": []}}, upsert=True)
 
 
+<<<<<<< HEAD
 # Retries persisted submissions whose earlier local-model call produced no score.
 def recover_missing_scores() -> None:
     """Reassess scoreless records after Ollama and its configured models become available."""
@@ -146,12 +152,13 @@ def start_missing_score_recovery() -> None:
 
 # Re-scores exactly one stale/legacy record. Used only by the migration endpoint below,
 # never by a GET read path.
+=======
+>>>>>>> development
 def migrate_one(row: dict) -> None:
     """Upgrade a single legacy record to the current assessment version."""
     assess_stored_submission(row["_id"])
 
 
-# Joins the three MongoDB collections into the unchanged admin API shape.
 def joined_submission(row: dict) -> dict:
     """Keep storage normalized while preserving frontend response compatibility."""
     result = dict(row)
@@ -167,11 +174,11 @@ def joined_submission(row: dict) -> dict:
     result["file"] = next((item for item in cleaned if item.get("kind") == "file"), None)
     result.setdefault("image_assessments", [item["assessment"] for item in result["images"] if item.get("assessment")])
     result.setdefault("image_assessment_summary", {"total": len(result["images"]), "complete": 0, "unavailable": len(result["images"]), "relevant": 0, "irrelevant": 0, "duplicates": 0, "spam": 0})
+    result.setdefault("document_assessment", result["file"]["assessment"] if result["file"] and result["file"].get("assessment") else None)  # NEW
+    result.setdefault("document_assessment_summary", None)  # NEW
     return result
 
 
-# Adds dynamic campaign and reviewer metadata to an admin-only record.
-# NOTE: no longer calls the LLM. It only enriches whatever is already stored.
 def enrich_admin(row: dict) -> dict:
     """Compute cross-submission intelligence at read time using stored data only."""
     row = joined_submission(row)
@@ -186,17 +193,14 @@ def enrich_admin(row: dict) -> dict:
     return row
 
 
-# Reports basic API and database mode metadata.
 @app.get("/api/health")
 def health(): return {"status": "ok", "mode": "demo", "database": "mongodb"}
 
 
-# Authenticates a demo vendor or administrator account.
 @app.post("/api/auth/login")
 def authenticate(payload: LoginInput): return login(payload.username, payload.password)
 
 
-# Stores one multipart submission, then schedules private assessment from MongoDB.
 @app.post("/api/vendor/submissions", response_model=VendorReceipt, status_code=201)
 async def vendor_submit(background_tasks: BackgroundTasks, payload_json: str = Form(...),
                         images: list[UploadFile] = File(default=[]), attachment: UploadFile | None = File(default=None),
@@ -222,7 +226,6 @@ async def vendor_submit(background_tasks: BackgroundTasks, payload_json: str = F
     return VendorReceipt(id=str(result.inserted_id), status="pending", created_at=now)
 
 
-# Lists only submissions owned by the authenticated vendor.
 @app.get("/api/vendor/submissions", response_model=list[VendorSubmission])
 def vendor_submissions(user=Depends(vendor_only)):
     rows = []
@@ -233,16 +236,12 @@ def vendor_submissions(user=Depends(vendor_only)):
     return rows
 
 
-# Lists all automatically assessed submissions for administrators.
-# FIX: pure read — no scoring, no Ollama calls. Fast and safe to poll/refresh.
 @app.get("/api/admin/submissions", response_model=list[AdminSummary])
 def admin_submissions(user=Depends(admin_only)):
     """Expose internal scores only through the administrator-protected collection view."""
     return [serialize(enrich_admin(x)) for x in submissions.find().sort("created_at", -1)]
 
 
-# Returns a full admin-only assessment and evidence breakdown.
-# FIX: pure read — no scoring, no Ollama calls.
 @app.get("/api/admin/submissions/{submission_id}", response_model=AdminDetail)
 def admin_detail(submission_id: str, user=Depends(admin_only)):
     """Return the complete evidence ledger for human review."""
@@ -251,10 +250,6 @@ def admin_detail(submission_id: str, user=Depends(admin_only)):
     return serialize(enrich_admin(row))
 
 
-# NEW: explicit, admin-triggered migration. Re-scores only rows that are stale
-# (old assessment_version or missing intelligence). This is the ONLY place
-# besides new-submission background tasks where the LLM gets called for
-# existing records — never implicitly from a GET.
 @app.post("/api/admin/migrate")
 def migrate_stale(user=Depends(admin_only)):
     """Re-score legacy records on demand instead of silently on every read."""
@@ -265,7 +260,6 @@ def migrate_stale(user=Depends(admin_only)):
     return {"status": "ok", "migrated": len(stale)}
 
 
-# Streams a stored submission upload only to authenticated administrators.
 @app.get("/api/admin/uploads/{storage_name}")
 def admin_upload(storage_name: str, user=Depends(admin_only)):
     """Protect service images and documents from unauthenticated public access."""
@@ -274,7 +268,6 @@ def admin_upload(storage_name: str, user=Depends(admin_only)):
     return FileResponse(resolve_upload(storage_name), media_type=metadata["content_type"], filename=metadata["original_name"])
 
 
-# Records a human approval after automatic assessment completes.
 @app.post("/api/admin/submissions/{submission_id}/approve", response_model=AdminDetail)
 def approve(submission_id: str, user=Depends(admin_only)):
     """Allow a human decision only after automatic mandatory assessment finishes."""
@@ -288,7 +281,6 @@ def approve(submission_id: str, user=Depends(admin_only)):
     return serialize(row)
 
 
-# Stores the administrator's judgment for false-positive and rule-quality analysis.
 @app.post("/api/admin/submissions/{submission_id}/feedback", response_model=AdminDetail)
 def save_feedback(submission_id: str, payload: AdminFeedbackInput, user=Depends(admin_only)):
     """Append human feedback without automatically changing scoring weights or approval state."""
